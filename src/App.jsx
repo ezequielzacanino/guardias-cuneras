@@ -232,34 +232,39 @@ export default function App() {
       }
     }
 
-    // Clasificar días según feriados adyacentes
+    // 1. Asignar el tipo de día por defecto a TODOS los días de la línea de tiempo
     for (let i = 0; i < timeline.length; i++) {
       const day = timeline[i];
-      if (day.isHol) {
-        const prev = i > 0 ? timeline[i-1] : null;
-        const next = i < timeline.length-1 ? timeline[i+1] : null;
-        const pp   = i > 1 ? timeline[i-2] : null;
-        if (prev?.isWorkday && next?.isWorkday) {
-          day.effectiveType = 'sun';
-          if (prev) prev.effectiveType = 'fri';
-          if (pp?.isWorkday) pp.effectiveType = 'thu';
-        } else if (next && !next.isWorkday) {
-          day.effectiveType = 'sat';
-          if (prev?.isWorkday) prev.effectiveType = 'fri';
-        } else {
-          day.effectiveType = 'sun';
-        }
-      }
+      if      (day.dow === 0)                  day.effectiveType = 'sun';
+      else if (day.dow === 6)                  day.effectiveType = 'sat';
+      else if (day.dow === 5)                  day.effectiveType = 'fri';
+      else if (day.dow === 4)                  day.effectiveType = 'thu';
+      else if (day.dow === 2 || day.dow === 3) day.effectiveType = 'tuewed';
+      else                                     day.effectiveType = 'mon';
     }
+
+    // 2. Aplicar las reglas estrictas de feriados (sobreescriben los defectos)
     for (let i = 0; i < timeline.length; i++) {
       const day = timeline[i];
-      if (!day.effectiveType) {
-        if      (day.dow === 0)                  day.effectiveType = 'sun';
-        else if (day.dow === 6)                  day.effectiveType = 'sat';
-        else if (day.dow === 5)                  day.effectiveType = 'fri';
-        else if (day.dow === 4)                  day.effectiveType = 'thu';
-        else if (day.dow === 2 || day.dow === 3) day.effectiveType = 'tuewed';
-        else                                     day.effectiveType = 'mon';
+      if (!day.isHol) continue;
+
+      const prev = i > 0 ? timeline[i-1] : null;
+      const pp   = i > 1 ? timeline[i-2] : null;
+
+      if (day.dow === 5) {
+        // Viernes feriado
+        day.effectiveType = 'sat';
+        if (prev) prev.effectiveType = 'fri'; // Jueves anterior = Viernes
+        if (pp)   pp.effectiveType = 'thu';   // Miércoles anterior = Jueves (Aplica para Jueves Feliz)
+      } else if (day.dow === 1) {
+        // Lunes feriado
+        day.effectiveType = 'sun';
+        if (prev) prev.effectiveType = 'sat'; // Domingo anterior = Sábado
+        // El martes (day.dow === 2) posterior ya es 'tuewed' por defecto, no se toca.
+      } else if (day.dow >= 2 && day.dow <= 4) {
+        // Martes, Miércoles o Jueves feriado
+        day.effectiveType = 'sun';
+        if (prev) prev.effectiveType = 'fri'; // Día previo = Viernes (el anterior no cambia a Jueves)
       }
     }
 

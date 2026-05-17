@@ -1034,7 +1034,7 @@ export default function App() {
                 <div className="bg-white p-4 md:p-6 rounded-xl border border-gray-200 shadow-sm" id="calendar-export-node">
                   <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
                     <div>
-                      <h2 className="text-2xl font-extrabold text-gray-800">{capitalize(resultViewDate.toLocaleString('es-ES', {month:'long', year:'numeric'}))}</h2>
+                      <h2 className="text-2xl font-extrabold !text-gray-800">{capitalize(resultViewDate.toLocaleString('es-ES', {month:'long', year:'numeric'}))}</h2>
                       <p className="text-sm text-gray-500 font-medium">Calendario generado con mejor configuración obtenida</p>
                     </div>
                     <div className="flex items-center gap-2 w-full md:w-auto">
@@ -1216,7 +1216,7 @@ export default function App() {
                 <div className="mt-6 p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex items-start gap-3">
                   <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5"/>
                   <div className="text-sm text-emerald-800 font-medium">
-                    <strong>Zaca:</strong> En primera instancia no es necesario tocar parámetros, debería funcionar bien así. Respetar "No quiero estar" puede aumentarse para usar como día libre en R4. Equidad de lunes puede aumentarse en invierno, o bajarse para R2 de CEM6, donde no influye tanto.
+                    <strong>Zaca:</strong> En primera instancia no es necesario tocar parámetros, debería funcionar bien así. Respetar "No quiero estar" puede aumentarse para usar como día libre en R4. Equidad de lunes puede aumentarse en invierno, o bajarse para R2 de CEM6, donde no influye tanto. 
                   </div>
                 </div>
               </div>

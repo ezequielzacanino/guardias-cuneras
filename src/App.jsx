@@ -805,7 +805,7 @@ export default function App() {
         )}
 
         {/* Tabs */}
-        <div className="flex border-b border-gray-200 bg-gray-50/50">
+        <div className="flex border-b border-gray-200 bg-gray-50/50 overflow-x-auto whitespace-nowrap scrollbar-hide">
           {[
             { id: 'config',   icon: Settings,    label: 'Configuración' },
             { id: 'calendar', icon: CalendarIcon, label: 'Calendario'    },
@@ -813,7 +813,7 @@ export default function App() {
             { id: 'weights',  icon: Sliders,      label: 'Prioridades'   },
           ].map(({ id, icon: Icon, label }) => (
             <button key={id} onClick={() => setActiveTab(id)}
-              className={`flex-1 py-3 px-4 text-sm font-medium flex items-center justify-center gap-2 transition-colors
+              className={`flex-1 shrink-0 py-3 px-6 text-sm font-medium flex items-center justify-center gap-2 transition-colors
                 ${activeTab === id ? 'border-b-2 border-orange-500 text-orange-700 bg-white' : 'text-gray-500 hover:text-gray-700'}`}>
               <Icon className="w-4 h-4" /> {label}
             </button>
@@ -838,14 +838,18 @@ export default function App() {
                   <label className="block text-sm font-bold text-gray-700 mb-2">Período a Generar</label>
                   <select value={numMonths} onChange={(e) => setNumMonths(parseInt(e.target.value))}
                     className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg font-medium text-gray-800 outline-none focus:border-orange-500">
-                    {[1,2,3,4].map(n => <option key={n} value={n}>{n} {n===1?'Mes':'Meses'}</option>)}
+                    {[1,2,3,4,5,6,7,8,9,10,11,12].map(n => <option key={n} value={n}>{n} {n===1?'Mes':'Meses'}</option>)}
                   </select>
                 </div>
                 <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                   <label className="block text-sm font-bold text-gray-700 mb-2">Número total de resis</label>
-                  <input type="number" min="2" max="15" value={numResidents}
-                    onChange={(e) => { const v = parseInt(e.target.value)||2; setNumResidents(v); if (selectedResId >= v) setSelectedResId(0); }}
-                    className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg font-medium text-gray-800 outline-none focus:border-orange-500" />
+                  <select value={numResidents}
+                    onChange={(e) => { const v = parseInt(e.target.value); setNumResidents(v); if (selectedResId >= v) setSelectedResId(0); }}
+                    className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg font-medium text-gray-800 outline-none focus:border-orange-500">
+                    {Array.from({ length: 36 }, (_, i) => i + 2).map(n => (
+                      <option key={n} value={n}>{n} Residentes</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                   <label className="block text-sm font-bold text-gray-700 mb-2">Resis por Día</label>
@@ -877,7 +881,7 @@ export default function App() {
               <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
                   <div>
-                    <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2"><Filter className="w-5 h-5 text-orange-600"/> Editor del Calendario Base</h2>
+                    <h2 className="text-lg font-bold text-[#222222] flex items-center gap-2"><Filter className="w-5 h-5 text-orange-600"/> Editor del Calendario Base</h2>
                     <p className="text-sm text-gray-500 mt-1">Configura feriados y bloqueos personales por mes.</p>
                   </div>
                   <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
@@ -1002,7 +1006,7 @@ export default function App() {
               ) : (
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                   <div className="p-6 bg-slate-50 border-b border-gray-200">
-                    <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><Activity className="w-6 h-6 text-orange-600"/> Balance y Equidad de los combos </h2>
+                    <h2 className="text-xl font-bold text-[#222222] flex items-center gap-2"><Activity className="w-6 h-6 text-orange-600"/> Balance y Equidad de los combos </h2>
                     <p className="text-sm text-gray-500 mt-1">Análisis de los resultados de la optimización</p>
                   </div>
                   <div className="overflow-x-auto">
@@ -1059,8 +1063,8 @@ export default function App() {
               <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
                   <div>
-                    <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2"><Sliders className="w-6 h-6 text-orange-600"/> Ajuste de Prioridades</h2>
-                    <p className="text-sm text-gray-500 mt-1">Valores altísimos para minimizar el error cuadrático (desigualdad).</p>
+                    <h2 className="text-xl font-bold text-[#222222] flex items-center gap-2"><Sliders className="w-6 h-6 text-orange-600"/> Ajuste de Prioridades</h2>
+                    <p className="text-sm text-gray-500 mt-1">Poner valores altos para minimizar desigualdad (error cuadrático).</p>
                   </div>
                   <button onClick={() => setWeights(DEFAULT_WEIGHTS)} className="px-4 py-2 w-full md:w-auto bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-bold rounded-lg transition-colors border border-slate-300">
                     Restablecer Valores

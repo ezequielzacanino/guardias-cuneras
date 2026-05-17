@@ -854,14 +854,9 @@ export default function App() {
         {/* Header */}
         <div className="bg-slate-800 text-white p-6 flex flex-col md:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-4">
-            <div className="bg-white p-2 rounded-full shrink-0 flex items-center justify-center">
-              <svg viewBox="0 0 100 100" className="w-12 h-12 md:w-14 md:h-14">
-                <rect x="25" y="20" width="20" height="25" fill="#f26322"/>
-                <rect x="55" y="20" width="20" height="25" fill="#f26322"/>
-                <rect x="25" y="55" width="20" height="25" fill="#f26322"/>
-                <rect x="55" y="55" width="20" height="25" fill="#f26322"/>
-              </svg>
-            </div>
+            <a href="https://github.com/ezequielzacanino/guardias-cuneras" target="_blank" rel="noopener noreferrer" className="shrink-0">
+              <img src="/assets/logo-app.png" alt="Logo Guardias Cuneras" className="w-16 h-16 md:w-[72px] md:h-[72px] rounded-full object-cover border-2 border-white shadow-md hover:opacity-90 transition-opacity" />
+            </a>
             <div className="flex flex-col">
               <h1 className="text-xl md:text-3xl font-extrabold tracking-tight text-orange-500 uppercase">GUARDIAS CUNERAS</h1>
               <span className="text-xs md:text-sm text-gray-400 mt-1">By Zaca · Algoritmo de equidad por varianza total</span>
@@ -900,7 +895,7 @@ export default function App() {
           {/* ── CONFIG TAB ── */}
           {activeTab === 'config' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                   <label className="block text-sm font-bold text-gray-700 mb-2">Mes de Inicio</label>
                   <div className="flex items-center gap-2 bg-gray-50 p-2 rounded-lg border border-gray-200">
@@ -934,16 +929,6 @@ export default function App() {
                     {[1,2,3].map(n => <option key={n} value={n}>{n} Residente{n>1?'s':''}</option>)}
                   </select>
                 </div>
-                {/* ── MODO R4 ── */}
-                <div className={`p-4 rounded-xl border-2 shadow-sm flex flex-col justify-center gap-2 cursor-pointer transition-all ${r4Mode ? 'bg-sky-50 border-sky-400' : 'bg-white border-gray-200'}`}
-                  onClick={() => { const next = !r4Mode; setR4Mode(next); if (next) setResidentsPerDay(2); }}>
-                  <div className="flex items-center gap-3">
-                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-all ${r4Mode ? 'bg-sky-500 border-sky-500' : 'border-gray-400'}`}>
-                      {r4Mode && <svg viewBox="0 0 12 12" className="w-3 h-3 fill-white"><path d="M2 6l3 3 5-5"/><polyline points="2,6 5,9 10,4" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"/></svg>}
-                    </div>
-                    <span className={`text-sm font-bold ${r4Mode ? 'text-sky-700' : 'text-gray-700'}`}>Modo R4</span>
-                  </div>
-                </div>
               </div>
 
               <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
@@ -970,10 +955,21 @@ export default function App() {
                     <h2 className="text-lg font-bold !text-[#222222] flex items-center gap-2"><Filter className="w-5 h-5 text-orange-600"/> Editor del Calendario Base</h2>
                     <p className="text-sm text-gray-500 mt-1">Configura feriados y bloqueos personales por mes.</p>
                   </div>
-                  <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
-                    <button onClick={() => setConfigDate(new Date(configDate.getFullYear(), configDate.getMonth()-1, 1))} className="p-1 hover:bg-slate-200 rounded"><ChevronLeft className="w-4 h-4"/></button>
-                    <span className="min-w-[120px] text-center font-semibold text-sm">{capitalize(configDate.toLocaleString('es-ES', {month:'short', year:'numeric'}))}</span>
-                    <button onClick={() => setConfigDate(new Date(configDate.getFullYear(), configDate.getMonth()+1, 1))} className="p-1 hover:bg-slate-200 rounded"><ChevronRight className="w-4 h-4"/></button>
+                  <div className="flex items-center gap-3">
+                    {/* ── MODO R4 compacto ── */}
+                    <button
+                      onClick={() => { const next = !r4Mode; setR4Mode(next); if (next) setResidentsPerDay(2); }}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all ${r4Mode ? 'bg-sky-50 border-sky-400 text-sky-700' : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'}`}>
+                      <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all ${r4Mode ? 'bg-sky-500 border-sky-500' : 'border-gray-400'}`}>
+                        {r4Mode && <svg viewBox="0 0 12 12" className="w-2.5 h-2.5"><polyline points="2,6 5,9 10,4" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      </div>
+                      Modo R4
+                    </button>
+                    <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
+                      <button onClick={() => setConfigDate(new Date(configDate.getFullYear(), configDate.getMonth()-1, 1))} className="p-1 hover:bg-slate-200 rounded"><ChevronLeft className="w-4 h-4"/></button>
+                      <span className="min-w-[120px] text-center font-semibold text-sm">{capitalize(configDate.toLocaleString('es-ES', {month:'short', year:'numeric'}))}</span>
+                      <button onClick={() => setConfigDate(new Date(configDate.getFullYear(), configDate.getMonth()+1, 1))} className="p-1 hover:bg-slate-200 rounded"><ChevronRight className="w-4 h-4"/></button>
+                    </div>
                   </div>
                 </div>
 

@@ -943,7 +943,6 @@ export default function App() {
                     </div>
                     <span className={`text-sm font-bold ${r4Mode ? 'text-sky-700' : 'text-gray-700'}`}>Modo R4</span>
                   </div>
-                  <p className="text-xs text-gray-500 pl-8">2 resis/día: uno ↑ Arriba (sala) y uno ↓ Abajo (guardia externa). Balancea ambos roles.</p>
                 </div>
               </div>
 

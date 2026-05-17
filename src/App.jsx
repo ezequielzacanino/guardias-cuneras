@@ -125,6 +125,7 @@ export default function App() {
   const [numMonths, setNumMonths] = useState(1);
   const [numResidents, setNumResidents] = useState(5);
   const [residentsPerDay, setResidentsPerDay] = useState(1);
+  const [r4Mode, setR4Mode] = useState(false);
 
   const [holidays, setHolidays] = useState([]);
   const [preferences, setPreferences] = useState({});
@@ -271,6 +272,7 @@ export default function App() {
     const N = timeline.length;
     const R = numResidents;
     const rpd = residentsPerDay;
+    const isR4 = r4Mode;
     const typeArr  = timeline.map(t => t.effectiveType);
     const scoreArr = typeArr.map(t => DAY_TYPES[t].score);
 
@@ -318,12 +320,13 @@ export default function App() {
     };
 
     // Actualiza métricas de un residente específico (O(1) amortizado por N bajo)
-    const updateResidentMetrics = (r, state) => {
+    const updateResidentMetrics = (r, state, mat) => {
       let dl = state.dayList[r];
       dl.sort((a,b) => a - b);
       
       let score = 0, mon = 0, tuewed = 0, thu = 0, sat = 0, sun = 0, sandwich = 0, pref = 0, thuPen = 0;
       let missedWant = totalWant[r];
+      let arribaCount = 0, abajoCount = 0;
 
       for (let i = 0; i < dl.length; i++) {
         let d = dl[i];
@@ -336,6 +339,11 @@ export default function App() {
         if (i > 0 && dl[i] - dl[i-1] === 2) sandwich++;
         if (dontMat[r][d]) pref += weights.prefDontWant;
         if (wantMat[r][d]) missedWant--;
+        
+        // R4: determinar slot (arriba = slot 0, abajo = slot 1)
+        if (isR4 && mat) {
+          if (mat[d].indexOf(r) === 0) arribaCount++; else abajoCount++;
+        }
         
         // Jueves feliz (si hace jueves, no debería hacer vie/sab/dom siguientes)
         if (isThu[d]) {
@@ -358,6 +366,7 @@ export default function App() {
       state.sandwichC[r] = sandwich;
       state.prefC[r] = pref;
       state.happyThuC[r] = thuPen;
+      if (isR4) { state.arribaC[r] = arribaCount; state.abajoC[r] = abajoCount; }
     };
 
     const computeTotalCost = (state) => {
@@ -382,6 +391,18 @@ export default function App() {
         cost += state.happyThuC[i] * weights.happyThu;
       }
       cost += totSandwich * weights.sandwichTotal;
+
+      // ── R4 MODE: equidad de roles arriba/abajo ──
+      if (isR4) {
+        // Equidad entre residentes en cada rol
+        cost += calcVariance(state.arribaC) * 25000;
+        cost += calcVariance(state.abajoC)  * 25000;
+        // Balance individual: cada residente debe tener arribaC ≈ abajoC
+        for (let r = 0; r < R; r++) {
+          const diff = state.arribaC[r] - state.abajoC[r];
+          cost += diff * diff * 30000;
+        }
+      }
       
       return cost;
     };
@@ -397,7 +418,8 @@ export default function App() {
           dl: [...state.dayList[r]], shift: state.shiftC[r], score: state.scoreC[r],
           mon: state.monC[r], tuewed: state.tuewedC[r], thu: state.thuC[r],
           sat: state.satC[r], sun: state.sunC[r], sandwich: state.sandwichC[r],
-          pref: state.prefC[r], happyThu: state.happyThuC[r]
+          pref: state.prefC[r], happyThu: state.happyThuC[r],
+          ...(isR4 ? { arriba: state.arribaC[r], abajo: state.abajoC[r] } : {})
         };
       }
       
@@ -407,7 +429,7 @@ export default function App() {
         state.dayList[m.newR].push(m.d);
       }
       
-      for (let r of involved) updateResidentMetrics(r, state);
+      for (let r of involved) updateResidentMetrics(r, state, mat);
       
       return function rollback() {
         for (let m of moves) mat[m.d][m.s] = m.oldR;
@@ -423,6 +445,7 @@ export default function App() {
           state.sandwichC[r] = backup[r].sandwich;
           state.prefC[r] = backup[r].pref;
           state.happyThuC[r] = backup[r].happyThu;
+          if (isR4) { state.arribaC[r] = backup[r].arriba; state.abajoC[r] = backup[r].abajo; }
         }
       };
     };
@@ -481,7 +504,8 @@ export default function App() {
         monC: new Array(R).fill(0), tuewedC: new Array(R).fill(0), thuC: new Array(R).fill(0),
         satC: new Array(R).fill(0), sunC: new Array(R).fill(0),
         sandwichC: new Array(R).fill(0), prefC: new Array(R).fill(0),
-        happyThuC: new Array(R).fill(0)
+        happyThuC: new Array(R).fill(0),
+        ...(isR4 ? { arribaC: new Array(R).fill(0), abajoC: new Array(R).fill(0) } : {})
       };
 
       for (let d = 0; d < N; d++) {
@@ -489,7 +513,7 @@ export default function App() {
           state.dayList[mat[d][s]].push(d);
         }
       }
-      for (let r = 0; r < R; r++) updateResidentMetrics(r, state);
+      for (let r = 0; r < R; r++) updateResidentMetrics(r, state, mat);
 
       let currentCost = computeTotalCost(state);
       let bestMat = mat.map(r => [...r]);
@@ -510,63 +534,95 @@ export default function App() {
 
         let moveType = Math.random();
         let moves = null;
+        let didRoleSwap = false;
 
-        if (moveType < 0.40) {
-          // Replace
+        // ── R4: Role Swap (intercambia arriba/abajo dentro del mismo día) ──
+        if (isR4 && moveType >= 0.85) {
           let d = Math.floor(Math.random() * N);
-          let s = Math.floor(Math.random() * rpd);
-          let r_old = mat[d][s];
-          let r_new = Math.floor(Math.random() * R);
-          if (r_old !== r_new && !mat[d].includes(r_new) && isValidInsertion(r_new, d, state.dayList[r_new])) {
-            moves = [{d, s, oldR: r_old, newR: r_new}];
-          }
-        } else if (moveType < 0.70) {
-          // Swap
-          let d1 = Math.floor(Math.random() * N);
-          let s1 = Math.floor(Math.random() * rpd);
-          let d2 = Math.floor(Math.random() * N);
-          let s2 = Math.floor(Math.random() * rpd);
-          if (d1 !== d2) {
-            let r1 = mat[d1][s1], r2 = mat[d2][s2];
-            if (r1 !== r2 && !mat[d1].includes(r2) && !mat[d2].includes(r1)) {
-              if (isValidInsertion(r1, d2, state.dayList[r1], d1) && isValidInsertion(r2, d1, state.dayList[r2], d2)) {
-                moves = [{d: d1, s: s1, oldR: r1, newR: r2}, {d: d2, s: s2, oldR: r2, newR: r1}];
-              }
+          if (mat[d].length === 2) {
+            let r0 = mat[d][0]; // actualmente arriba
+            let r1 = mat[d][1]; // actualmente abajo
+            // Swap roles: no cambia dayList, solo arribaC/abajoC y mat slot order
+            mat[d][0] = r1; mat[d][1] = r0;
+            state.arribaC[r0]--; state.abajoC[r0]++;
+            state.arribaC[r1]++; state.abajoC[r1]--;
+            let newCost = computeTotalCost(state);
+            let delta = newCost - currentCost;
+            if (delta < 0 || Math.random() < Math.exp(-delta / temp)) {
+              currentCost = newCost;
+              if (newCost < bestCost) { bestCost = newCost; bestMat = mat.map(row => [...row]); }
+            } else {
+              // Rollback swap
+              mat[d][0] = r0; mat[d][1] = r1;
+              state.arribaC[r0]++; state.abajoC[r0]--;
+              state.arribaC[r1]--; state.abajoC[r1]++;
             }
+            didRoleSwap = true;
           }
-        } else if (moveType < 0.85) {
-          // Targeted Sandwich Repair
-          let candidates = [];
-          for (let r=0; r<R; r++) if (state.sandwichC[r] > 0) candidates.push(r);
-          if (candidates.length > 0) {
-            let r = candidates[Math.floor(Math.random() * candidates.length)];
-            let dl = state.dayList[r];
-            for (let i=1; i<dl.length; i++) {
-              if (dl[i] - dl[i-1] === 2) {
-                let targetD = Math.random() < 0.5 ? dl[i] : dl[i-1];
-                let s = mat[targetD].indexOf(r);
-                let r_new = Math.floor(Math.random() * R);
-                if (r_new !== r && !mat[targetD].includes(r_new) && isValidInsertion(r_new, targetD, state.dayList[r_new])) {
-                  moves = [{d: targetD, s, oldR: r, newR: r_new}];
-                  break;
+        }
+
+        if (!didRoleSwap) {
+          const t0 = isR4 ? 0.35 : 0.40;
+          const t1 = isR4 ? 0.60 : 0.70;
+          const t2 = isR4 ? 0.75 : 0.85;
+
+          if (moveType < t0) {
+            // Replace
+            let d = Math.floor(Math.random() * N);
+            let s = Math.floor(Math.random() * rpd);
+            let r_old = mat[d][s];
+            let r_new = Math.floor(Math.random() * R);
+            if (r_old !== r_new && !mat[d].includes(r_new) && isValidInsertion(r_new, d, state.dayList[r_new])) {
+              moves = [{d, s, oldR: r_old, newR: r_new}];
+            }
+          } else if (moveType < t1) {
+            // Swap
+            let d1 = Math.floor(Math.random() * N);
+            let s1 = Math.floor(Math.random() * rpd);
+            let d2 = Math.floor(Math.random() * N);
+            let s2 = Math.floor(Math.random() * rpd);
+            if (d1 !== d2) {
+              let r1 = mat[d1][s1], r2 = mat[d2][s2];
+              if (r1 !== r2 && !mat[d1].includes(r2) && !mat[d2].includes(r1)) {
+                if (isValidInsertion(r1, d2, state.dayList[r1], d1) && isValidInsertion(r2, d1, state.dayList[r2], d2)) {
+                  moves = [{d: d1, s: s1, oldR: r1, newR: r2}, {d: d2, s: s2, oldR: r2, newR: r1}];
                 }
               }
             }
-          }
-        } else {
-          // Targeted Shift Equity
-          let maxR = 0, minR = 0;
-          for (let r=1; r<R; r++) {
-            if (state.shiftC[r] > state.shiftC[maxR]) maxR = r;
-            if (state.shiftC[r] < state.shiftC[minR]) minR = r;
-          }
-          if (maxR !== minR && state.shiftC[maxR] > state.shiftC[minR]) {
-            let dl = state.dayList[maxR];
-            if (dl.length > 0) {
-              let d = dl[Math.floor(Math.random() * dl.length)];
-              let s = mat[d].indexOf(maxR);
-              if (!mat[d].includes(minR) && isValidInsertion(minR, d, state.dayList[minR])) {
-                moves = [{d, s, oldR: maxR, newR: minR}];
+          } else if (moveType < t2) {
+            // Targeted Sandwich Repair
+            let candidates = [];
+            for (let r=0; r<R; r++) if (state.sandwichC[r] > 0) candidates.push(r);
+            if (candidates.length > 0) {
+              let r = candidates[Math.floor(Math.random() * candidates.length)];
+              let dl = state.dayList[r];
+              for (let i=1; i<dl.length; i++) {
+                if (dl[i] - dl[i-1] === 2) {
+                  let targetD = Math.random() < 0.5 ? dl[i] : dl[i-1];
+                  let s = mat[targetD].indexOf(r);
+                  let r_new = Math.floor(Math.random() * R);
+                  if (r_new !== r && !mat[targetD].includes(r_new) && isValidInsertion(r_new, targetD, state.dayList[r_new])) {
+                    moves = [{d: targetD, s, oldR: r, newR: r_new}];
+                    break;
+                  }
+                }
+              }
+            }
+          } else {
+            // Targeted Shift Equity
+            let maxR = 0, minR = 0;
+            for (let r=1; r<R; r++) {
+              if (state.shiftC[r] > state.shiftC[maxR]) maxR = r;
+              if (state.shiftC[r] < state.shiftC[minR]) minR = r;
+            }
+            if (maxR !== minR && state.shiftC[maxR] > state.shiftC[minR]) {
+              let dl = state.dayList[maxR];
+              if (dl.length > 0) {
+                let d = dl[Math.floor(Math.random() * dl.length)];
+                let s = mat[d].indexOf(maxR);
+                if (!mat[d].includes(minR) && isValidInsertion(minR, d, state.dayList[minR])) {
+                  moves = [{d, s, oldR: maxR, newR: minR}];
+                }
               }
             }
           }
@@ -610,7 +666,12 @@ export default function App() {
     const finalStats = Array.from({length: R}, (_, i) => ({
       id: i, totalShifts: 0, score: 0, shiftDays: [],
       counts: { mon: 0, tuewed: 0, thu: 0, fri: 0, sat: 0, sun: 0 },
-      sandwiches: 0, triples: 0
+      sandwiches: 0, triples: 0,
+      ...(r4Mode ? {
+        arribaCounts: { mon: 0, tuewed: 0, thu: 0, fri: 0, sat: 0, sun: 0 },
+        abajoCounts:  { mon: 0, tuewed: 0, thu: 0, fri: 0, sat: 0, sun: 0 },
+        arribaTotal: 0, abajoTotal: 0, arribaScore: 0, abajoScore: 0
+      } : {})
     }));
 
     for (let d = 0; d < bestMatrix.length; d++) {
@@ -618,11 +679,24 @@ export default function App() {
       finalSchedule[dateStr] = [];
       for (let s = 0; s < rpd; s++) {
         const rId = bestMatrix[d][s];
+        const dayType = timeline[d].effectiveType;
+        const dayScore = DAY_TYPES[dayType].score;
         finalStats[rId].shiftDays.push(d);
         finalStats[rId].totalShifts++;
-        finalStats[rId].score += DAY_TYPES[timeline[d].effectiveType].score;
-        finalStats[rId].counts[timeline[d].effectiveType]++;
-        finalSchedule[dateStr].push({ resId: rId, isSandwich: false, isTriple: false });
+        finalStats[rId].score += dayScore;
+        finalStats[rId].counts[dayType]++;
+        if (r4Mode) {
+          if (s === 0) {
+            finalStats[rId].arribaCounts[dayType]++;
+            finalStats[rId].arribaTotal++;
+            finalStats[rId].arribaScore += dayScore;
+          } else {
+            finalStats[rId].abajoCounts[dayType]++;
+            finalStats[rId].abajoTotal++;
+            finalStats[rId].abajoScore += dayScore;
+          }
+        }
+        finalSchedule[dateStr].push({ resId: rId, isSandwich: false, isTriple: false, slot: s });
       }
     }
 
@@ -728,6 +802,7 @@ export default function App() {
                     {resInfos.map((ri, idx) => (
                       <div key={idx} className={`p-1 md:p-1.5 rounded-md border text-xs md:text-sm font-bold text-center shadow-sm flex flex-col gap-0.5 ${RESIDENT_COLORS[ri.resId % RESIDENT_COLORS.length]} ${ri.isTriple ? 'ring-2 ring-red-500 ring-offset-1' : ''}`}>
                         <span className="truncate" title={getResName(ri.resId)}>{getShortResName(ri.resId)}</span>
+                        {r4Mode && <span className={`text-[10px] font-extrabold px-1 rounded ${ri.slot === 0 ? 'bg-sky-600 text-white' : 'bg-emerald-600 text-white'}`}>{ri.slot === 0 ? '↑ Arriba' : '↓ Abajo'}</span>}
                         {ri.isTriple   && <span className="bg-red-600 text-white text-[9px] px-1 rounded animate-pulse font-extrabold uppercase shadow-sm">⚠ TRIPLE ⚠</span>}
                         {ri.isSandwich && <span className="bg-amber-500 text-white text-[9px] px-1 rounded font-semibold">Sanguche</span>}
                       </div>
@@ -825,7 +900,7 @@ export default function App() {
           {/* ── CONFIG TAB ── */}
           {activeTab === 'config' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                   <label className="block text-sm font-bold text-gray-700 mb-2">Mes de Inicio</label>
                   <div className="flex items-center gap-2 bg-gray-50 p-2 rounded-lg border border-gray-200">
@@ -854,9 +929,21 @@ export default function App() {
                 <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                   <label className="block text-sm font-bold text-gray-700 mb-2">Resis por Día</label>
                   <select value={residentsPerDay} onChange={(e) => setResidentsPerDay(parseInt(e.target.value))}
-                    className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg font-medium text-gray-800 outline-none focus:border-orange-500">
+                    disabled={r4Mode}
+                    className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg font-medium text-gray-800 outline-none focus:border-orange-500 disabled:opacity-50 disabled:cursor-not-allowed">
                     {[1,2,3].map(n => <option key={n} value={n}>{n} Residente{n>1?'s':''}</option>)}
                   </select>
+                </div>
+                {/* ── MODO R4 ── */}
+                <div className={`p-4 rounded-xl border-2 shadow-sm flex flex-col justify-center gap-2 cursor-pointer transition-all ${r4Mode ? 'bg-sky-50 border-sky-400' : 'bg-white border-gray-200'}`}
+                  onClick={() => { const next = !r4Mode; setR4Mode(next); if (next) setResidentsPerDay(2); }}>
+                  <div className="flex items-center gap-3">
+                    <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-all ${r4Mode ? 'bg-sky-500 border-sky-500' : 'border-gray-400'}`}>
+                      {r4Mode && <svg viewBox="0 0 12 12" className="w-3 h-3 fill-white"><path d="M2 6l3 3 5-5"/><polyline points="2,6 5,9 10,4" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"/></svg>}
+                    </div>
+                    <span className={`text-sm font-bold ${r4Mode ? 'text-sky-700' : 'text-gray-700'}`}>Modo R4</span>
+                  </div>
+                  <p className="text-xs text-gray-500 pl-8">2 resis/día: uno ↑ Arriba (sala) y uno ↓ Abajo (guardia externa). Balancea ambos roles.</p>
                 </div>
               </div>
 
@@ -1014,6 +1101,7 @@ export default function App() {
                       <thead>
                         <tr className="bg-gray-100 text-gray-600 text-xs uppercase tracking-wider font-bold">
                           <th className="p-4 border-b">Residente</th>
+                          {r4Mode && <th className="p-4 border-b text-center text-sky-700">Rol</th>}
                           <th className="p-4 border-b text-center text-indigo-700">LUN</th>
                           <th className="p-4 border-b text-center text-indigo-700">Ma/Mi</th>
                           <th className="p-4 border-b text-center text-indigo-700">JUE</th>
@@ -1022,28 +1110,71 @@ export default function App() {
                           <th className="p-4 border-b text-center text-rose-700">DOM</th>
                           <th className="p-4 border-b text-center bg-gray-200 text-gray-800">TOTAL</th>
                           <th className="p-4 border-b text-center bg-orange-100 text-orange-800">SCORE</th>
-                          <th className="p-4 border-b text-center text-amber-700 bg-amber-50">SANGUCHES</th>
+                          {!r4Mode && <th className="p-4 border-b text-center text-amber-700 bg-amber-50">SANGUCHES</th>}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-200 text-sm">
                         {stats.sort((a,b) => b.score - a.score).map((s) => (
-                          <tr key={s.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="p-4 font-bold flex items-center gap-2">
-                              <div className={`w-3 h-3 rounded-full ${RESIDENT_COLORS[s.id % RESIDENT_COLORS.length].split(' ')[0]}`}/>
-                              {getResName(s.id)}
-                            </td>
-                            <td className="p-4 text-center font-bold text-indigo-600">{s.counts.mon}</td>
-                            <td className="p-4 text-center font-bold text-indigo-600">{s.counts.tuewed}</td>
-                            <td className="p-4 text-center font-bold text-indigo-600">{s.counts.thu}</td>
-                            <td className="p-4 text-center font-medium text-blue-600">{s.counts.fri}</td>
-                            <td className="p-4 text-center font-bold text-rose-600">{s.counts.sat}</td>
-                            <td className="p-4 text-center font-bold text-rose-500">{s.counts.sun}</td>
-                            <td className="p-4 text-center font-extrabold bg-gray-100">{s.totalShifts}</td>
-                            <td className="p-4 text-center font-extrabold bg-orange-50 text-orange-700">{s.score.toFixed(1)}</td>
-                            <td className="p-4 text-center font-bold text-amber-600 bg-amber-50/30">
-                              {s.sandwiches} {s.triples > 0 ? <span className="text-red-600">(+{s.triples} T)</span> : ''}
-                            </td>
-                          </tr>
+                          r4Mode ? (
+                            <React.Fragment key={s.id}>
+                              {/* Fila Arriba */}
+                              <tr className="hover:bg-sky-50/40 transition-colors border-b-0">
+                                <td className="p-4 font-bold" style={{borderBottom: 'none'}}>
+                                  <div className="flex items-center gap-2">
+                                    <div className={`w-3 h-3 rounded-full shrink-0 ${RESIDENT_COLORS[s.id % RESIDENT_COLORS.length].split(' ')[0]}`}/>
+                                    <div className="flex flex-col">
+                                      <span>{getResName(s.id)}</span>
+                                      <span className="text-[10px] text-gray-400 font-normal">{s.sandwiches} sanguche{s.sandwiches !== 1 ? 's' : ''}{s.triples > 0 ? ` (+${s.triples}T)` : ''}</span>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="p-4" style={{borderBottom: 'none'}}>
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-sky-100 text-sky-700">↑ Arriba</span>
+                                </td>
+                                <td className="p-4 text-center font-bold text-indigo-600" style={{borderBottom: 'none'}}>{s.arribaCounts.mon}</td>
+                                <td className="p-4 text-center font-bold text-indigo-600" style={{borderBottom: 'none'}}>{s.arribaCounts.tuewed}</td>
+                                <td className="p-4 text-center font-bold text-indigo-600" style={{borderBottom: 'none'}}>{s.arribaCounts.thu}</td>
+                                <td className="p-4 text-center font-medium text-blue-600" style={{borderBottom: 'none'}}>{s.arribaCounts.fri}</td>
+                                <td className="p-4 text-center font-bold text-rose-600" style={{borderBottom: 'none'}}>{s.arribaCounts.sat}</td>
+                                <td className="p-4 text-center font-bold text-rose-500" style={{borderBottom: 'none'}}>{s.arribaCounts.sun}</td>
+                                <td className="p-4 text-center font-extrabold bg-sky-50" style={{borderBottom: 'none'}}>{s.arribaTotal}</td>
+                                <td className="p-4 text-center font-extrabold bg-orange-50 text-orange-700" style={{borderBottom: 'none'}}>{s.arribaScore.toFixed(1)}</td>
+                              </tr>
+                              {/* Fila Abajo */}
+                              <tr className="hover:bg-emerald-50/40 transition-colors">
+                                <td className="p-4 text-gray-400 text-xs font-medium pl-9">└</td>
+                                <td className="p-4">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-700">↓ Abajo</span>
+                                </td>
+                                <td className="p-4 text-center font-bold text-indigo-600">{s.abajoCounts.mon}</td>
+                                <td className="p-4 text-center font-bold text-indigo-600">{s.abajoCounts.tuewed}</td>
+                                <td className="p-4 text-center font-bold text-indigo-600">{s.abajoCounts.thu}</td>
+                                <td className="p-4 text-center font-medium text-blue-600">{s.abajoCounts.fri}</td>
+                                <td className="p-4 text-center font-bold text-rose-600">{s.abajoCounts.sat}</td>
+                                <td className="p-4 text-center font-bold text-rose-500">{s.abajoCounts.sun}</td>
+                                <td className="p-4 text-center font-extrabold bg-emerald-50">{s.abajoTotal}</td>
+                                <td className="p-4 text-center font-extrabold bg-orange-50 text-orange-700">{s.abajoScore.toFixed(1)}</td>
+                              </tr>
+                            </React.Fragment>
+                          ) : (
+                            <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                              <td className="p-4 font-bold flex items-center gap-2">
+                                <div className={`w-3 h-3 rounded-full ${RESIDENT_COLORS[s.id % RESIDENT_COLORS.length].split(' ')[0]}`}/>
+                                {getResName(s.id)}
+                              </td>
+                              <td className="p-4 text-center font-bold text-indigo-600">{s.counts.mon}</td>
+                              <td className="p-4 text-center font-bold text-indigo-600">{s.counts.tuewed}</td>
+                              <td className="p-4 text-center font-bold text-indigo-600">{s.counts.thu}</td>
+                              <td className="p-4 text-center font-medium text-blue-600">{s.counts.fri}</td>
+                              <td className="p-4 text-center font-bold text-rose-600">{s.counts.sat}</td>
+                              <td className="p-4 text-center font-bold text-rose-500">{s.counts.sun}</td>
+                              <td className="p-4 text-center font-extrabold bg-gray-100">{s.totalShifts}</td>
+                              <td className="p-4 text-center font-extrabold bg-orange-50 text-orange-700">{s.score.toFixed(1)}</td>
+                              <td className="p-4 text-center font-bold text-amber-600 bg-amber-50/30">
+                                {s.sandwiches} {s.triples > 0 ? <span className="text-red-600">(+{s.triples} T)</span> : ''}
+                              </td>
+                            </tr>
+                          )
                         ))}
                       </tbody>
                     </table>

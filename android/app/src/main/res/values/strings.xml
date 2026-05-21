@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Guardias Cuneras</string>
+    <string name="title_activity_main">guardiascuneras</string>
+    <string name="package_name">com.ezacanino.guardias_cuneras</string>
+    <string name="custom_url_scheme">com.ezacanino.guardias_cuneras</string>
+</resources>

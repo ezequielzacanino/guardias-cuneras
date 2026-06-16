@@ -113,6 +113,8 @@ Como ejemplo, para generar cronograma de guardias de R2 de Cesac, deberían: 1. 
 
 **Modo R4** – Activa un segundo slot por día con roles diferenciados: guardias en sala "Arriba" y guardias en externa "Abajo"
 
+**Recuperando rotación (Modo R4)** – Si algún R4 arranca tarde sus guardias (está atrasado en la rotación), entrá a "3. Recuperando rotación" en el editor del calendario y marcá los meses que no va a hacer guardia. Esos meses no se le asignan turnos y se le descuentan del total las guardias promedio de cada mes anulado.
+
 **Prioridades** – Si querés darle más importancia a ciertos criterios, ajustá los sliders en la pestaña "Prioridades" antes de generar.
 `;
 
@@ -199,6 +201,9 @@ export default function App() {
   const [numResidents, setNumResidents] = useState(5);
   const [residentsPerDay, setResidentsPerDay] = useState(1);
   const [r4Mode, setR4Mode] = useState(false);
+  // Modo R4 — "Recuperando rotación": meses anulados por residente.
+  // Clave de mes absoluta 'YYYY-MM' para que sea estable ante cambios de período.
+  const [r4AnnulledMonths, setR4AnnulledMonths] = useState({}); // { [resId]: ['YYYY-MM', ...] }
 
   const [holidays, setHolidays] = useState([]);
   const [preferences, setPreferences] = useState({});
@@ -270,6 +275,14 @@ export default function App() {
 
   const toggleHoliday = (dateStr) =>
     setHolidays(prev => prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr].sort());
+
+  // Anula/desanula un mes ('YYYY-MM') para un residente en Modo R4 ("Recuperando rotación").
+  const toggleAnnulledMonth = (resId, ym) =>
+    setR4AnnulledMonths(prev => {
+      const cur  = prev[resId] || [];
+      const next = cur.includes(ym) ? cur.filter(m => m !== ym) : [...cur, ym].sort();
+      return { ...prev, [resId]: next };
+    });
 
   const togglePreference = (resId, dateStr) => {
     setPreferences(prev => {
@@ -479,6 +492,77 @@ export default function App() {
       if (['fri','sat','sun'].includes(typeArr[d])) isFriSatSun[d] = 1;
     }
 
+    // ── [1.5] RECUPERANDO ROTACIÓN (Modo R4) ───────────────────────────────
+    // Meses anulados por residente: (a) sus días pasan a NO disponibles y
+    // (b) se le descuenta del objetivo de equidad el promedio de guardias/mes
+    // por cada mes anulado. El promedio se calcula ACÁ, antes de correr el SA.
+    const annulledCount = new Array(R).fill(0);
+    const periodYM = Array.from({ length: numMonths }, (_, i) => {
+      const cm = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
+      return `${cm.getFullYear()}-${String(cm.getMonth() + 1).padStart(2, '0')}`;
+    });
+    if (isR4) {
+      for (let r = 0; r < R; r++) {
+        const ann = r4AnnulledMonths[r] || [];
+        for (let i = 0; i < periodYM.length; i++)
+          if (ann.includes(periodYM[i])) annulledCount[r]++;
+      }
+      // Días de un mes anulado → no disponibles para ese residente (restricción dura).
+      for (let d = 0; d < N; d++) {
+        const ym = timeline[d].dateStr.slice(0, 7);
+        for (let r = 0; r < R; r++)
+          if ((r4AnnulledMonths[r] || []).includes(ym)) vacMat[r][d] = 1;
+      }
+    }
+
+    // Promedios de carga por mes (por residente) para repartir el descuento.
+    const monthsDiv = R * numMonths;
+    let sumScore = 0, cMon = 0, cTue = 0, cThu = 0, cSat = 0, cSun = 0;
+    for (let d = 0; d < N; d++) {
+      sumScore += scoreArr[d];
+      if (isMon[d])    cMon++;
+      if (isTueWed[d]) cTue++;
+      if (isThu[d])    cThu++;
+      if (isSat[d])    cSat++;
+      if (isSun[d])    cSun++;
+    }
+    const avgShiftPM = (N * rpd)        / monthsDiv;  // guardias totales / mes (ej: "3 por mes")
+    const avgScorePM = (sumScore * rpd) / monthsDiv;
+    const avgMonPM   = (cMon * rpd)     / monthsDiv;
+    const avgTuePM   = (cTue * rpd)     / monthsDiv;
+    const avgThuPM   = (cThu * rpd)     / monthsDiv;
+    const avgSatPM   = (cSat * rpd)     / monthsDiv;
+    const avgSunPM   = (cSun * rpd)     / monthsDiv;
+    const avgRolePM  = N                / monthsDiv;  // un "arriba" y un "abajo" por día
+
+    // Descuento por residente = promedioMensual * (meses anulados). 0 si no anuló nada.
+    const dShift = new Array(R).fill(0), dScore = new Array(R).fill(0);
+    const dMon   = new Array(R).fill(0), dTue   = new Array(R).fill(0);
+    const dThu   = new Array(R).fill(0), dSat   = new Array(R).fill(0);
+    const dSun   = new Array(R).fill(0), dRole  = new Array(R).fill(0);
+    for (let r = 0; r < R; r++) {
+      const k = annulledCount[r];
+      if (!k) continue;
+      dShift[r] = avgShiftPM * k; dScore[r] = avgScorePM * k;
+      dMon[r]   = avgMonPM   * k; dTue[r]   = avgTuePM   * k;
+      dThu[r]   = avgThuPM   * k; dSat[r]   = avgSatPM   * k;
+      dSun[r]   = avgSunPM   * k; dRole[r]  = avgRolePM  * k;
+    }
+
+    // Varianza con descuento: var( arr[i] + off[i] ). Minimizarla hace que el residente
+    // anulado termine con menos guardias sin que el optimizador intente "compensarlo".
+    // Con off todo-cero es bit-idéntica a calcVariance (no cambia resultados sin anulación).
+    const varAdj = (arr, off) => {
+      const n = arr.length;
+      if (n === 0) return 0;
+      let sum = 0;
+      for (let i = 0; i < n; i++) sum += arr[i] + off[i];
+      const mean = sum / n;
+      let v = 0;
+      for (let i = 0; i < n; i++) { const x = arr[i] + off[i] - mean; v += x * x; }
+      return v / n;
+    };
+
     // ── [2] HELPERS DEL ALGORITMO ──────────────────────────────────────────
 
     const isValidInsertion = (r, d, currentDayList, ignoreD = -1) => {
@@ -565,13 +649,15 @@ export default function App() {
 
     const computeTotalCost = (state) => {
       let cost = 0;
-      cost += calcVariance(state.shiftC)   * weights.shiftEquity;
-      cost += calcVariance(state.scoreC)   * weights.scoreEquity;
-      cost += calcVariance(state.monC)     * weights.monEquity;
-      cost += calcVariance(state.tuewedC)  * weights.tuewedEquity;
-      cost += calcVariance(state.thuC)     * weights.thuEquity;
-      cost += calcVariance(state.satC)     * weights.satEquity;
-      cost += calcVariance(state.sunC)     * weights.sunEquity;
+      // Equidad de carga: con descuento por meses anulados (varAdj). Sin anulaciones,
+      // dShift/dScore/... son cero y varAdj es idéntica a la varianza simple.
+      cost += varAdj(state.shiftC,  dShift) * weights.shiftEquity;
+      cost += varAdj(state.scoreC,  dScore) * weights.scoreEquity;
+      cost += varAdj(state.monC,    dMon)   * weights.monEquity;
+      cost += varAdj(state.tuewedC, dTue)   * weights.tuewedEquity;
+      cost += varAdj(state.thuC,    dThu)   * weights.thuEquity;
+      cost += varAdj(state.satC,    dSat)   * weights.satEquity;
+      cost += varAdj(state.sunC,    dSun)   * weights.sunEquity;
 
       cost += calcVariance(state.sandwichC) * weights.sandwichEquity;
       let totSandwich = 0;
@@ -583,9 +669,9 @@ export default function App() {
       cost += totSandwich * weights.sandwichTotal;
 
       if (isR4) {
-        // Equidad de totales entre residentes
-        cost += calcVariance(state.arribaC) * 25000;
-        cost += calcVariance(state.abajoC)  * 25000;
+        // Equidad de totales entre residentes (con descuento por meses anulados)
+        cost += varAdj(state.arribaC, dRole) * 25000;
+        cost += varAdj(state.abajoC,  dRole) * 25000;
 
         // Balance intraresi: arriba vs abajo por tipo de día
         // Usamos diff² con pesos según dificultad del día
@@ -1131,6 +1217,77 @@ export default function App() {
   const capitalize      = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   const resultViewDate  = new Date(baseDate.getFullYear(), baseDate.getMonth() + resultMonthOffset, 1);
 
+  // Meses del período (clave absoluta 'YYYY-MM') para la matriz de "Recuperando rotación".
+  const periodMonths = Array.from({ length: numMonths }, (_, i) => {
+    const d = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
+    return {
+      ym:    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+      label: capitalize(d.toLocaleString('es-ES', { month: 'short', year: '2-digit' })),
+    };
+  });
+
+  // Cuántos meses anulados (dentro del período actual) tiene un residente.
+  const annulledInPeriod = (resId) =>
+    (r4AnnulledMonths[resId] || []).filter(ym => periodMonths.some(m => m.ym === ym)).length;
+
+  // Matriz residente × mes para anular meses en Modo R4 ("Recuperando rotación").
+  const renderRotationMatrix = () => (
+    <div className="mt-4 space-y-3">
+      <div className="flex items-start gap-2 text-xs bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800">
+        <span className="shrink-0">ℹ️</span>
+        <span>
+          Las columnas son los <strong>{numMonths} {numMonths === 1 ? 'mes' : 'meses'}</strong> del período a generar.
+          Para anular otros meses, cambiá el <strong>Mes de Inicio</strong> o aumentá el <strong>Período a Generar</strong> (arriba en Configuración).
+        </span>
+      </div>
+      <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto shadow-sm">
+        <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wider font-bold">
+            <th className="p-3 text-left border-b border-gray-200 sticky left-0 bg-gray-50 z-10">Residente</th>
+            {periodMonths.map(m => (
+              <th key={m.ym} className="p-3 text-center border-b border-gray-200 whitespace-nowrap">{m.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {Array.from({ length: numResidents }).map((_, i) => {
+            const ann = r4AnnulledMonths[i] || [];
+            return (
+              <tr key={i} className="hover:bg-amber-50/30 transition-colors">
+                <td className="p-2 font-semibold text-gray-800 sticky left-0 bg-white z-10">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-3 h-3 rounded-full shrink-0 ${RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[0]}`} />
+                    <span className="truncate max-w-[140px]" title={getResName(i)}>{getResName(i)}</span>
+                  </div>
+                </td>
+                {periodMonths.map(m => {
+                  const on = ann.includes(m.ym);
+                  return (
+                    <td key={m.ym} className="p-1.5 text-center">
+                      <button onClick={() => toggleAnnulledMonth(i, m.ym)}
+                        title={on ? 'Recuperando rotación — sin guardias este mes' : 'Click para anular este mes'}
+                        className={`w-full min-w-[64px] px-2 py-1.5 rounded-md text-xs font-bold border transition-all ${
+                          on ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                             : 'bg-gray-50 text-gray-400 border-gray-200 hover:border-amber-300 hover:text-amber-600'}`}>
+                        {on ? '♻ Recup.' : '–'}
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+        <p className="text-xs text-gray-500 px-3 py-2.5 border-t border-gray-100 bg-gray-50/50">
+          Los meses marcados <strong className="text-amber-600">♻ Recup.</strong> no se le asignan guardias a ese residente
+          y se le descuentan del total las guardias promedio de cada mes anulado.
+        </p>
+      </div>
+    </div>
+  );
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  JSX
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1427,18 +1584,22 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-3">
                     <button
-                      onClick={() => { const next = !r4Mode; setR4Mode(next); if (next) setResidentsPerDay(2); }}
+                      onClick={() => { const next = !r4Mode; setR4Mode(next); if (next) setResidentsPerDay(2); else if (configMode === 'rotacion') setConfigMode('holidays'); }}
                       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all ${r4Mode ? 'bg-sky-50 border-sky-400 text-sky-700' : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'}`}>
                       <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all ${r4Mode ? 'bg-sky-500 border-sky-500' : 'border-gray-400'}`}>
                         {r4Mode && <svg viewBox="0 0 12 12" className="w-2.5 h-2.5"><polyline points="2,6 5,9 10,4" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                       </div>
                       Modo R4
                     </button>
-                    <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
-                      <button onClick={() => setConfigDate(new Date(configDate.getFullYear(), configDate.getMonth()-1, 1))} className="p-1 hover:bg-slate-200 rounded"><ChevronLeft className="w-4 h-4"/></button>
-                      <span className="min-w-[120px] text-center font-semibold text-sm">{capitalize(configDate.toLocaleString('es-ES', {month:'short', year:'numeric'}))}</span>
-                      <button onClick={() => setConfigDate(new Date(configDate.getFullYear(), configDate.getMonth()+1, 1))} className="p-1 hover:bg-slate-200 rounded"><ChevronRight className="w-4 h-4"/></button>
-                    </div>
+                    {/* El navegador de mes no aplica en "Recuperando rotación":
+                        la matriz ya muestra todos los meses del período de una. */}
+                    {configMode !== 'rotacion' && (
+                      <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
+                        <button onClick={() => setConfigDate(new Date(configDate.getFullYear(), configDate.getMonth()-1, 1))} className="p-1 hover:bg-slate-200 rounded"><ChevronLeft className="w-4 h-4"/></button>
+                        <span className="min-w-[120px] text-center font-semibold text-sm">{capitalize(configDate.toLocaleString('es-ES', {month:'short', year:'numeric'}))}</span>
+                        <button onClick={() => setConfigDate(new Date(configDate.getFullYear(), configDate.getMonth()+1, 1))} className="p-1 hover:bg-slate-200 rounded"><ChevronRight className="w-4 h-4"/></button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -1452,6 +1613,12 @@ export default function App() {
                       className={`flex-1 md:flex-none px-4 py-2 text-sm font-semibold rounded-md transition-all ${configMode === 'preferences' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}>
                       2. Marcar Preferencias
                     </button>
+                    {r4Mode && (
+                      <button onClick={() => setConfigMode('rotacion')}
+                        className={`flex-1 md:flex-none px-4 py-2 text-sm font-semibold rounded-md transition-all whitespace-nowrap ${configMode === 'rotacion' ? 'bg-amber-100 text-amber-700 shadow-sm' : 'text-gray-500 hover:bg-gray-50'}`}>
+                        3. Recuperando rotación
+                      </button>
+                    )}
                   </div>
                   {configMode === 'preferences' && (
                     <div className="flex flex-col gap-2 animate-in fade-in w-full md:w-auto bg-white p-2 rounded-lg border border-gray-200">
@@ -1473,9 +1640,13 @@ export default function App() {
                   )}
                 </div>
                 <p className="text-xs text-gray-500 italic mt-2 mb-1">
-                  {configMode === 'holidays' ? '* Click en un día para marcarlo como feriado.' : '* Elegir el tipo de preferencia arriba y hacer click en el calendario.'}
+                  {configMode === 'holidays'
+                    ? '* Click en un día para marcarlo como feriado.'
+                    : configMode === 'rotacion'
+                    ? '* Marcá los meses en que cada R4 arranca tarde (recuperando rotación): no hará guardias ese mes y se le descuentan del total.'
+                    : '* Elegir el tipo de preferencia arriba y hacer click en el calendario.'}
                 </p>
-                {renderCalendarMonth(configDate, true)}
+                {configMode === 'rotacion' ? renderRotationMatrix() : renderCalendarMonth(configDate, true)}
               </div>
 
               <button onClick={generateScheduleAsync}
@@ -1585,6 +1756,9 @@ export default function App() {
                                     <div className="flex flex-col">
                                       <span>{getResName(s.id)}</span>
                                       <span className="text-[10px] text-gray-400 font-normal">{s.sandwiches} sanguche{s.sandwiches !== 1 ? 's' : ''}{s.triples > 0 ? ` (+${s.triples}T)` : ''}</span>
+                                      {annulledInPeriod(s.id) > 0 && (
+                                        <span className="text-[10px] text-amber-600 font-bold">♻ Recupera {annulledInPeriod(s.id)} mes{annulledInPeriod(s.id) !== 1 ? 'es' : ''}</span>
+                                      )}
                                     </div>
                                   </div>
                                 </td>

@@ -98,6 +98,26 @@ consecutivos** (`isValidInsertion` exige separación > 1 día).
 tres seguidas con ese patrón; es crítico. **Jueves feliz** = quien hace jueves no debería
 tener guardia el fin de semana inmediato.
 
+## Parejas (2+ resis por día)
+
+Se habilita cuando `residentsPerDay >= 2` (checkbox "Formar parejas" en la pestaña
+Configuración). Dos residentes emparejados **no pueden compartir guardia**, porque al día
+siguiente quedarían los dos posguardia y la sala sin cobertura. **Excepción**: días de tipo
+efectivo `fri` o `sat` (al otro día no hay sala que cubrir). El emparejamiento es opcional y
+parcial: puede haber resis sueltos.
+
+Estado: `pairsEnabled` (bool) + `pairs` = `{ [resId]: partnerId }`, siempre simétrico
+(`setPartner` rompe los vínculos previos de ambos). `partnerOfRes(id)` valida simetría y
+rango antes de devolver la pareja.
+
+En el algoritmo: `partnerOf` (array, -1 = sin pareja), `pairFreeDay` (vie/sáb) y el helper
+`pairOK(r, d, mat, excludeR)` que bloquea los movimientos del SA que armarían un choque.
+Además hay contador por residente `pairC` (choques actuales) penalizado con
+`PAIR_CONFLICT_W` en `computeTotalCost`: sirve de red de seguridad para limpiar choques que
+hayan quedado en la solución inicial cuando no había alternativa. `doMove` agrega las parejas
+de los residentes involucrados al set de recálculo. Los choques que sobreviven se listan en
+`violations` como "Pareja junta".
+
 ## Modo R4 (importante)
 
 Al activarlo, fuerza `residentsPerDay = 2` y crea **dos roles por día**:
@@ -130,6 +150,12 @@ Efecto sobre el algoritmo:
 
 Estado: `r4AnnulledMonths` = `{ [resId]: ['YYYY-MM', ...] }` (clave de mes absoluta,
 estable ante cambios de mes inicial / período).
+
+La matriz tiene su propio navegador de meses: `rotationOffset` (corrimiento en meses
+respecto del mes de inicio, 0 = ventana == período). Se puede marcar **cualquier** mes,
+incluso fuera del período; esas marcas se guardan igual pero **no afectan** al cronograma
+hasta que el mes caiga dentro del período (el SA solo mira `periodYM`). Se distinguen con
+estilo punteado, cabecera "fuera del período" y un contador al costado del navegador.
 
 ## Convenciones y notas
 

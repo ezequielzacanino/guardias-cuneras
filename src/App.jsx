@@ -111,9 +111,11 @@ Genera el cronograma de guardias de forma automática, intentando que la carga s
 **¿Soy R2 Cesac, cómo debería hacer las guardias?**
 Como ejemplo, para generar cronograma de guardias de R2 de Cesac, deberían: 1. Poner período a generar (normalmente 4 meses). 2. Poner número total de resis (10-12?). 3. Poner cantidad de resis por día (3 habitualmente). Eso lo dejaría configurado para R2 (todavía no contempla que no se pisen resis del mismo Cesac, proximamente)
 
+**Formar parejas** – Se habilita cuando hay 2 o más resis por día. Si dos resis comparten sala, no pueden hacer guardia el mismo día: al otro día quedarían los dos posguardia y la sala sin cobertura. La única excepción son los viernes y sábados (ahí sí pueden coincidir). Podés armar todas las parejas que quieras y dejar resis sueltos si el número es impar.
+
 **Modo R4** – Activa un segundo slot por día con roles diferenciados: guardias en sala "Arriba" y guardias en externa "Abajo"
 
-**Recuperando rotación (Modo R4)** – Si algún R4 arranca tarde sus guardias (está atrasado en la rotación), entrá a "3. Recuperando rotación" en el editor del calendario y marcá los meses que no va a hacer guardia. Esos meses no se le asignan turnos y se le descuentan del total las guardias promedio de cada mes anulado.
+**Recuperando rotación (Modo R4)** – Si algún R4 arranca tarde sus guardias (está atrasado en la rotación), entrá a "3. Recuperando rotación" en el editor del calendario y marcá los meses que no va a hacer guardia. Esos meses no se le asignan turnos y se le descuentan del total las guardias promedio de cada mes anulado. Con las flechitas de arriba de la tabla te podés mover a cualquier mes: los que quedan fuera del período a generar se marcan igual (quedan guardados), pero recién hacen efecto cuando el período los incluye.
 
 **Prioridades** – Si querés darle más importancia a ciertos criterios, ajustá los sliders en la pestaña "Prioridades" antes de generar.
 `;
@@ -183,6 +185,14 @@ const R4_W_FRI   = 50000;
 const R4_W_SAT   = 65000;  // máximo: es el día más pesado del cronograma
 const R4_W_SUN   = 55000;
 
+// ─── Parejas (2 resis por día) ───────────────────────────────────────────────
+// Dos resis "en pareja" (misma sala) no pueden estar de guardia el mismo día,
+// porque al otro día quedarían los dos posguardia y la sala sin cobertura.
+// Excepción: días con tipo efectivo viernes o sábado (al otro día no hay sala).
+// Penalidad altísima: en la práctica funciona como restricción dura, pero deja
+// salida si la configuración no admite ninguna solución sin choques.
+const PAIR_CONFLICT_W = 250000;
+
 // Aplica/revierte un role-swap incremental sobre los contadores por tipo
 const applyRoleSwapByType = (state, r, dt, sign) => {
   // sign = +1 → r gana un arriba de tipo dt y pierde un abajo
@@ -204,6 +214,15 @@ export default function App() {
   // Modo R4 — "Recuperando rotación": meses anulados por residente.
   // Clave de mes absoluta 'YYYY-MM' para que sea estable ante cambios de período.
   const [r4AnnulledMonths, setR4AnnulledMonths] = useState({}); // { [resId]: ['YYYY-MM', ...] }
+
+  // Parejas: dos resis de la misma sala que no pueden coincidir de guardia.
+  // Mapa simétrico { [resId]: partnerId }. Solo aplica con 2+ resis por día.
+  const [pairsEnabled, setPairsEnabled] = useState(false);
+  const [pairs, setPairs]               = useState({});
+
+  // Corrimiento (en meses) de la ventana visible en "Recuperando rotación",
+  // relativo al mes de inicio. 0 = la ventana coincide con el período a generar.
+  const [rotationOffset, setRotationOffset] = useState(0);
 
   const [holidays, setHolidays] = useState([]);
   const [preferences, setPreferences] = useState({});
@@ -283,6 +302,31 @@ export default function App() {
       const next = cur.includes(ym) ? cur.filter(m => m !== ym) : [...cur, ym].sort();
       return { ...prev, [resId]: next };
     });
+
+  // Arma/deshace la pareja de un residente. Siempre simétrico: si alguno de los
+  // dos ya tenía pareja, esa pareja anterior queda libre.
+  const setPartner = (resId, partnerId) =>
+    setPairs(prev => {
+      const next = { ...prev };
+      const oldA = next[resId];
+      if (oldA !== undefined && oldA !== null) delete next[oldA];
+      delete next[resId];
+      if (partnerId !== null && partnerId !== resId) {
+        const oldB = next[partnerId];
+        if (oldB !== undefined && oldB !== null) delete next[oldB];
+        next[resId]    = partnerId;
+        next[partnerId] = resId;
+      }
+      return next;
+    });
+
+  // Pareja efectiva de un residente (dentro del plantel actual y simétrica).
+  const partnerOfRes = (resId) => {
+    const p = pairs[resId];
+    if (p === undefined || p === null) return null;
+    if (p < 0 || p >= numResidents || p === resId) return null;
+    return pairs[p] === resId ? p : null;
+  };
 
   const togglePreference = (resId, dateStr) => {
     setPreferences(prev => {
@@ -492,6 +536,36 @@ export default function App() {
       if (['fri','sat','sun'].includes(typeArr[d])) isFriSatSun[d] = 1;
     }
 
+    // ── [1.4] PAREJAS ───────────────────────────────────────────────────────
+    // partnerOf[r] = id de la pareja de r, o -1. Solo se toma en cuenta si la
+    // relación es simétrica y ambos están dentro del plantel.
+    const partnerOf = new Array(R).fill(-1);
+    if (residentsPerDay >= 2 && pairsEnabled) {
+      for (let r = 0; r < R; r++) {
+        const p = pairs[r];
+        if (p === undefined || p === null || p < 0 || p >= R || p === r) continue;
+        if (pairs[p] === r) partnerOf[r] = p;
+      }
+    }
+    const hasPairs = partnerOf.some(p => p >= 0);
+
+    // Días donde SÍ pueden coincidir: tipo efectivo viernes o sábado
+    // (al día siguiente no hace falta cubrir la sala).
+    const pairFreeDay = new Uint8Array(N);
+    for (let d = 0; d < N; d++) if (isFri[d] || isSat[d]) pairFreeDay[d] = 1;
+
+    // ¿Puede entrar r al día d sin quedar junto a su pareja?
+    // excludeR = residente que sale del día en el mismo movimiento (swap).
+    const pairOK = (r, d, mat, excludeR = -1) => {
+      if (!hasPairs) return true;
+      const p = partnerOf[r];
+      if (p < 0 || pairFreeDay[d]) return true;
+      const row = mat[d];
+      for (let i = 0; i < row.length; i++)
+        if (row[i] === p && p !== excludeR) return false;
+      return true;
+    };
+
     // ── [1.5] RECUPERANDO ROTACIÓN (Modo R4) ───────────────────────────────
     // Meses anulados por residente: (a) sus días pasan a NO disponibles y
     // (b) se le descuenta del objetivo de equidad el promedio de guardias/mes
@@ -582,6 +656,8 @@ export default function App() {
 
       let score = 0, mon = 0, tuewed = 0, thu = 0, sat = 0, sun = 0;
       let sandwich = 0, pref = 0, thuPen = 0, missedWant = totalWant[r];
+      let pairPen = 0;
+      const myPartner = hasPairs ? partnerOf[r] : -1;
       let arribaCount = 0, abajoCount = 0;
       let arrMon=0, abjMon=0, arrTue=0, abjTue=0;
       let arrThu=0, abjThu=0, arrFri=0, abjFri=0;
@@ -598,6 +674,9 @@ export default function App() {
         if (i > 0 && dl[i] - dl[i-1] === 2) sandwich++;
         if (dontMat[r][d]) pref += weights.prefDontWant;
         if (wantMat[r][d]) missedWant--;
+
+        // Choque de pareja: comparten día y no es viernes/sábado
+        if (myPartner >= 0 && !pairFreeDay[d] && mat && mat[d].includes(myPartner)) pairPen++;
 
         if (isThu[d]) {
           for (let j = i+1; j < dl.length; j++) {
@@ -635,6 +714,7 @@ export default function App() {
       state.thuC[r]   = thu;          state.satC[r]      = sat;
       state.sunC[r]   = sun;          state.sandwichC[r] = sandwich;
       state.prefC[r]  = pref;         state.happyThuC[r] = thuPen;
+      state.pairC[r]  = pairPen;
 
       if (isR4) {
         state.arribaC[r] = arribaCount; state.abajoC[r]  = abajoCount;
@@ -665,6 +745,7 @@ export default function App() {
         totSandwich += state.sandwichC[i];
         cost += state.prefC[i];
         cost += state.happyThuC[i] * weights.happyThu;
+        if (hasPairs) cost += state.pairC[i] * PAIR_CONFLICT_W;
       }
       cost += totSandwich * weights.sandwichTotal;
 
@@ -701,6 +782,9 @@ export default function App() {
     const doMove = (mat, state, moves) => {
       const involved = new Set();
       for (const m of moves) { involved.add(m.oldR); involved.add(m.newR); }
+      // Si alguien tiene pareja, sus contadores de choque también cambian.
+      if (hasPairs)
+        for (const r of [...involved]) { const p = partnerOf[r]; if (p >= 0) involved.add(p); }
 
       const backup = {};
       for (const r of involved) {
@@ -711,6 +795,7 @@ export default function App() {
           thu:   state.thuC[r],     sat: state.satC[r],
           sun:   state.sunC[r],     sandwich: state.sandwichC[r],
           pref:  state.prefC[r],    happyThu: state.happyThuC[r],
+          pair:  state.pairC[r],
           ...(isR4 ? {
             arriba: state.arribaC[r],  abajo: state.abajoC[r],
             arrMon: state.arrMonC[r],  abjMon: state.abjMonC[r],
@@ -739,6 +824,7 @@ export default function App() {
           state.thuC[r]       = backup[r].thu;       state.satC[r]      = backup[r].sat;
           state.sunC[r]       = backup[r].sun;       state.sandwichC[r] = backup[r].sandwich;
           state.prefC[r]      = backup[r].pref;      state.happyThuC[r] = backup[r].happyThu;
+          state.pairC[r]      = backup[r].pair;
           if (isR4) {
             state.arribaC[r]  = backup[r].arriba;    state.abajoC[r]    = backup[r].abajo;
             state.arrMonC[r]  = backup[r].arrMon;    state.abjMonC[r]   = backup[r].abjMon;
@@ -767,7 +853,17 @@ export default function App() {
           available.sort(() => Math.random() - 0.5);
           for (let s = 0; s < rpd; s++) {
             if (available.length === 0) { valid = false; break; }
-            const chosen = available.shift();
+            // Con parejas activas, priorizar candidatos que no choquen con quien
+            // ya quedó en el día. Si no hay ninguno, se toma igual (el SA lo limpia).
+            let idx = 0;
+            if (hasPairs && !pairFreeDay[d]) {
+              const found = available.findIndex(c => {
+                const p = partnerOf[c];
+                return p < 0 || !mat[d].includes(p);
+              });
+              if (found > 0) idx = found;
+            }
+            const chosen = available.splice(idx, 1)[0];
             mat[d].push(chosen);
             dayList[chosen].push(d);
           }
@@ -835,6 +931,7 @@ export default function App() {
       thuC:       new Array(R).fill(0),  satC:      new Array(R).fill(0),
       sunC:       new Array(R).fill(0),  sandwichC: new Array(R).fill(0),
       prefC:      new Array(R).fill(0),  happyThuC: new Array(R).fill(0),
+      pairC:      new Array(R).fill(0),
       ...(isR4 ? {
         arribaC: new Array(R).fill(0),  abajoC:  new Array(R).fill(0),
         arrMonC: new Array(R).fill(0),  abjMonC: new Array(R).fill(0),
@@ -993,7 +1090,8 @@ export default function App() {
             const s     = Math.floor(Math.random() * rpd);
             const r_old = mat[d][s];
             const r_new = Math.floor(Math.random() * R);
-            if (r_old !== r_new && !mat[d].includes(r_new) && isValidInsertion(r_new, d, state.dayList[r_new]))
+            if (r_old !== r_new && !mat[d].includes(r_new) && isValidInsertion(r_new, d, state.dayList[r_new])
+                && pairOK(r_new, d, mat, r_old))
               moves = [{d, s, oldR: r_old, newR: r_new}];
           } else if (moveType < t1) {
             // Swap
@@ -1003,7 +1101,8 @@ export default function App() {
               const r1 = mat[d1][s1], r2 = mat[d2][s2];
               if (r1 !== r2 && !mat[d1].includes(r2) && !mat[d2].includes(r1))
                 if (isValidInsertion(r1, d2, state.dayList[r1], d1) && isValidInsertion(r2, d1, state.dayList[r2], d2))
-                  moves = [{d: d1, s: s1, oldR: r1, newR: r2}, {d: d2, s: s2, oldR: r2, newR: r1}];
+                  if (pairOK(r1, d2, mat, r2) && pairOK(r2, d1, mat, r1))
+                    moves = [{d: d1, s: s1, oldR: r1, newR: r2}, {d: d2, s: s2, oldR: r2, newR: r1}];
             }
           } else if (moveType < t2) {
             // Targeted sandwich repair
@@ -1017,7 +1116,8 @@ export default function App() {
                   const targetD = Math.random() < 0.5 ? dl[i] : dl[i-1];
                   const s       = mat[targetD].indexOf(r);
                   const r_new   = Math.floor(Math.random() * R);
-                  if (r_new !== r && !mat[targetD].includes(r_new) && isValidInsertion(r_new, targetD, state.dayList[r_new])) {
+                  if (r_new !== r && !mat[targetD].includes(r_new) && isValidInsertion(r_new, targetD, state.dayList[r_new])
+                      && pairOK(r_new, targetD, mat, r)) {
                     moves = [{d: targetD, s, oldR: r, newR: r_new}]; break;
                   }
                 }
@@ -1035,7 +1135,8 @@ export default function App() {
               if (dl.length > 0) {
                 const d = dl[Math.floor(Math.random() * dl.length)];
                 const s = mat[d].indexOf(maxR);
-                if (!mat[d].includes(minR) && isValidInsertion(minR, d, state.dayList[minR]))
+                if (!mat[d].includes(minR) && isValidInsertion(minR, d, state.dayList[minR])
+                    && pairOK(minR, d, mat, maxR))
                   moves = [{d, s, oldR: maxR, newR: minR}];
               }
             }
@@ -1136,6 +1237,19 @@ export default function App() {
       }
     }
 
+    // Choques de pareja que no se pudieron evitar (fuera de viernes/sábado).
+    if (rpd >= 2 && pairsEnabled) {
+      for (let d = 0; d < bestMatrix.length; d++) {
+        const et = timeline[d].effectiveType;
+        if (et === 'fri' || et === 'sat') continue;
+        const row = bestMatrix[d];
+        for (let i = 0; i < row.length; i++)
+          for (let j = i+1; j < row.length; j++)
+            if (partnerOfRes(row[i]) === row[j])
+              newViolations.push(`Pareja junta: ${timeline[d].dateStr} — ${getResName(row[i])} y ${getResName(row[j])} comparten guardia (quedan los dos posguardia).`);
+      }
+    }
+
     setSchedule(finalSchedule);
     setStats(finalStats);
     setViolations(newViolations);
@@ -1230,23 +1344,75 @@ export default function App() {
   const annulledInPeriod = (resId) =>
     (r4AnnulledMonths[resId] || []).filter(ym => periodMonths.some(m => m.ym === ym)).length;
 
+  const inPeriod = (ym) => periodMonths.some(m => m.ym === ym);
+
+  // Ventana de meses visible en la matriz: arranca en (mes de inicio + rotationOffset)
+  // y muestra tantas columnas como meses tenga el período. Con offset 0 coincide
+  // exactamente con el período; navegando se pueden ver y marcar meses de afuera.
+  const rotationMonths = Array.from({ length: numMonths }, (_, i) => {
+    const d = new Date(baseDate.getFullYear(), baseDate.getMonth() + rotationOffset + i, 1);
+    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    return {
+      ym,
+      label: capitalize(d.toLocaleString('es-ES', { month: 'short', year: '2-digit' })),
+      inPeriod: inPeriod(ym),
+    };
+  });
+
+  // Meses anulados que quedaron fuera del período (guardados pero inactivos).
+  const annulledOutsidePeriod = Object.values(r4AnnulledMonths)
+    .flat().filter(ym => !inPeriod(ym)).length;
+
+  const rotationRangeLabel = numMonths === 1
+    ? rotationMonths[0].label
+    : `${rotationMonths[0].label} – ${rotationMonths[numMonths-1].label}`;
+
   // Matriz residente × mes para anular meses en Modo R4 ("Recuperando rotación").
   const renderRotationMatrix = () => (
     <div className="mt-4 space-y-3">
       <div className="flex items-start gap-2 text-xs bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800">
         <span className="shrink-0">ℹ️</span>
         <span>
-          Las columnas son los <strong>{numMonths} {numMonths === 1 ? 'mes' : 'meses'}</strong> del período a generar.
-          Para anular otros meses, cambiá el <strong>Mes de Inicio</strong> o aumentá el <strong>Período a Generar</strong> (arriba en Configuración).
+          Movete con las flechitas para marcar cualquier mes. Los que están <strong>fuera del período a generar</strong> quedan
+          guardados, pero solo afectan al cronograma cuando caen dentro del período (ajustá el <strong>Mes de Inicio</strong> o
+          el <strong>Período a Generar</strong> arriba en Configuración).
         </span>
       </div>
+
+      {/* Navegador de la ventana de meses */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
+          <button onClick={() => setRotationOffset(o => o - 1)} title="Mes anterior"
+            className="p-1 hover:bg-slate-200 rounded"><ChevronLeft className="w-4 h-4"/></button>
+          <span className="min-w-[140px] text-center font-semibold text-sm">{rotationRangeLabel}</span>
+          <button onClick={() => setRotationOffset(o => o + 1)} title="Mes siguiente"
+            className="p-1 hover:bg-slate-200 rounded"><ChevronRight className="w-4 h-4"/></button>
+        </div>
+        {rotationOffset !== 0 && (
+          <button onClick={() => setRotationOffset(0)}
+            className="px-3 py-1.5 rounded-lg border border-orange-300 bg-orange-50 text-orange-700 text-xs font-bold hover:bg-orange-100 transition-colors">
+            ↩ Volver al período
+          </button>
+        )}
+        {annulledOutsidePeriod > 0 && (
+          <span className="text-xs text-gray-500">
+            {annulledOutsidePeriod} marca{annulledOutsidePeriod !== 1 ? 's' : ''} fuera del período (no afecta{annulledOutsidePeriod !== 1 ? 'n' : ''} al cronograma actual).
+          </span>
+        )}
+      </div>
+
       <div className="bg-white border border-gray-200 rounded-xl overflow-x-auto shadow-sm">
         <table className="w-full text-sm border-collapse">
         <thead>
           <tr className="bg-gray-50 text-gray-600 text-xs uppercase tracking-wider font-bold">
             <th className="p-3 text-left border-b border-gray-200 sticky left-0 bg-gray-50 z-10">Residente</th>
-            {periodMonths.map(m => (
-              <th key={m.ym} className="p-3 text-center border-b border-gray-200 whitespace-nowrap">{m.label}</th>
+            {rotationMonths.map(m => (
+              <th key={m.ym} className={`p-3 text-center border-b border-gray-200 whitespace-nowrap ${m.inPeriod ? '' : 'text-gray-400'}`}>
+                {m.label}
+                {!m.inPeriod && (
+                  <span className="block text-[9px] font-bold text-gray-400 normal-case tracking-normal">fuera del período</span>
+                )}
+              </th>
             ))}
           </tr>
         </thead>
@@ -1261,15 +1427,20 @@ export default function App() {
                     <span className="truncate max-w-[140px]" title={getResName(i)}>{getResName(i)}</span>
                   </div>
                 </td>
-                {periodMonths.map(m => {
-                  const on = ann.includes(m.ym);
+                {rotationMonths.map(m => {
+                  const on  = ann.includes(m.ym);
+                  const out = !m.inPeriod;
                   return (
-                    <td key={m.ym} className="p-1.5 text-center">
+                    <td key={m.ym} className={`p-1.5 text-center ${out ? 'bg-gray-50/60' : ''}`}>
                       <button onClick={() => toggleAnnulledMonth(i, m.ym)}
-                        title={on ? 'Recuperando rotación — sin guardias este mes' : 'Click para anular este mes'}
+                        title={on
+                          ? (out ? 'Marcado, pero este mes está fuera del período a generar' : 'Recuperando rotación — sin guardias este mes')
+                          : (out ? 'Click para marcarlo (queda guardado para cuando el período lo incluya)' : 'Click para anular este mes')}
                         className={`w-full min-w-[64px] px-2 py-1.5 rounded-md text-xs font-bold border transition-all ${
-                          on ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
-                             : 'bg-gray-50 text-gray-400 border-gray-200 hover:border-amber-300 hover:text-amber-600'}`}>
+                          on
+                            ? (out ? 'bg-amber-100 text-amber-600 border-amber-300 border-dashed'
+                                   : 'bg-amber-500 text-white border-amber-500 shadow-sm')
+                            : 'bg-gray-50 text-gray-400 border-gray-200 hover:border-amber-300 hover:text-amber-600'}`}>
                         {on ? '♻ Recup.' : '–'}
                       </button>
                     </td>
@@ -1283,6 +1454,7 @@ export default function App() {
         <p className="text-xs text-gray-500 px-3 py-2.5 border-t border-gray-100 bg-gray-50/50">
           Los meses marcados <strong className="text-amber-600">♻ Recup.</strong> no se le asignan guardias a ese residente
           y se le descuentan del total las guardias promedio de cada mes anulado.
+          Los marcados en <strong className="text-amber-500">punteado</strong> están fuera del período y hoy no hacen nada.
         </p>
       </div>
     </div>
@@ -1447,6 +1619,67 @@ export default function App() {
                     );
                   })}
                 </div>
+              </div>
+
+              {/* ── FORMAR PAREJAS ── */}
+              <div className="bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-gray-700 flex items-center gap-2">
+                      <Users className="w-5 h-5 text-orange-600" /> Formar parejas
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Dos resis de la misma sala no pueden estar de guardia el mismo día (al otro día quedarían
+                      los dos posguardia y la sala sin cobertura). Solo pueden coincidir <strong>viernes o sábado</strong>.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => residentsPerDay >= 2 && setPairsEnabled(v => !v)}
+                    disabled={residentsPerDay < 2}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all shrink-0 disabled:opacity-50 disabled:cursor-not-allowed ${pairsEnabled && residentsPerDay >= 2 ? 'bg-orange-50 border-orange-400 text-orange-700' : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'}`}>
+                    <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all ${pairsEnabled && residentsPerDay >= 2 ? 'bg-orange-500 border-orange-500' : 'border-gray-400'}`}>
+                      {pairsEnabled && residentsPerDay >= 2 && <svg viewBox="0 0 12 12" className="w-2.5 h-2.5"><polyline points="2,6 5,9 10,4" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                    </div>
+                    Formar parejas
+                  </button>
+                </div>
+
+                {residentsPerDay < 2 && (
+                  <p className="text-xs text-gray-400 italic mt-3">
+                    * Se habilita cuando ponés 2 o más resis por día.
+                  </p>
+                )}
+
+                {residentsPerDay >= 2 && pairsEnabled && (
+                  <div className="mt-4 animate-in fade-in slide-in-from-top-1 duration-200">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {Array.from({length: numResidents}).map((_, i) => {
+                        const partner   = partnerOfRes(i);
+                        const borderCls = RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[2];
+                        return (
+                          <div key={i} className={`flex items-center gap-2 bg-gray-50 border-y border-r border-l-4 rounded p-2 ${borderCls}`}>
+                            <span className="text-sm font-semibold text-gray-800 truncate flex-1" title={getResName(i)}>{getResName(i)}</span>
+                            <select
+                              value={partner === null ? '' : partner}
+                              onChange={(e) => setPartner(i, e.target.value === '' ? null : parseInt(e.target.value))}
+                              className="w-[46%] p-1.5 text-xs bg-white border border-gray-300 rounded-md outline-none focus:border-orange-500 font-semibold">
+                              <option value="">Sin pareja</option>
+                              {Array.from({length: numResidents}).map((_, j) => {
+                                if (j === i) return null;
+                                const jPartner = partnerOfRes(j);
+                                if (jPartner !== null && jPartner !== i) return null;
+                                return <option key={j} value={j}>{getResName(j)}</option>;
+                              })}
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-3">
+                      Puede haber resis sin pareja (si el número es impar, o si simplemente no comparten sala).
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* ── PREFERENCIAS REMOTAS ── */}

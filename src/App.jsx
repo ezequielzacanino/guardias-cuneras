@@ -1328,6 +1328,11 @@ export default function App() {
     );
   };
 
+  // Como nadie puede hacer dos guardias seguidas, los que están hoy no pueden estar
+  // mañana: hace falta al menos el doble de resis por día para que exista solución.
+  const minResidentsNeeded = residentsPerDay * 2;
+  const notEnoughResidents = numResidents < minResidentsNeeded;
+
   const capitalize      = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   const resultViewDate  = new Date(baseDate.getFullYear(), baseDate.getMonth() + resultMonthOffset, 1);
 
@@ -1599,8 +1604,13 @@ export default function App() {
                   <select value={residentsPerDay} onChange={(e) => setResidentsPerDay(parseInt(e.target.value))}
                     disabled={r4Mode}
                     className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg font-medium text-gray-800 outline-none focus:border-orange-500 disabled:opacity-50 disabled:cursor-not-allowed">
-                    {[1,2,3].map(n => <option key={n} value={n}>{n} Residente{n>1?'s':''}</option>)}
+                    {[1,2,3,4,5].map(n => <option key={n} value={n}>{n} Residente{n>1?'s':''}</option>)}
                   </select>
+                  {residentsPerDay > 1 && (
+                    <p className={`text-[11px] mt-1.5 ${notEnoughResidents ? 'text-rose-600 font-semibold' : 'text-gray-500'}`}>
+                      Hacen falta al menos {minResidentsNeeded} resis en total (nadie hace dos días seguidos).
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -1883,10 +1893,10 @@ export default function App() {
               </div>
 
               <button onClick={generateScheduleAsync}
-                disabled={isGenerating || residentsPerDay > numResidents}
+                disabled={isGenerating || notEnoughResidents}
                 className="w-full py-4 bg-slate-900 hover:bg-slate-800 disabled:bg-gray-400 text-white rounded-xl font-extrabold text-lg transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-3 mt-6">
-                {residentsPerDay > numResidents
-                  ? 'Error: Pide más residentes por día que el total disponible'
+                {notEnoughResidents
+                  ? `Error: con ${residentsPerDay} resi${residentsPerDay > 1 ? 's' : ''} por día hacen falta al menos ${minResidentsNeeded} residentes`
                   : <><CalendarDays className="w-6 h-6"/> GENERAR GUARDIAS ÓPTIMAS</>}
               </button>
             </div>

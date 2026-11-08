@@ -94,6 +94,10 @@ const HELP_TEXT = `
 **¿Qué hace la app?**
 Genera el cronograma de guardias de forma automática, intentando que la carga sea lo más equitativa posible entre todos los residentes.
 
+**Modo guiado** – En la pestaña Configuración, "🧭 Paso a paso" te va preguntando de a una cosa (período, cuántos resis, cuántos por día, si son R4, parejas, feriados, vacaciones y preferencias) y al final generás. "⚙️ Todo junto" muestra todo en una sola pantalla. Los dos usan los mismos datos: podés pasar de uno a otro sin perder nada.
+
+**Se guarda solo** – Todo lo que cargás (y el último cronograma generado) queda guardado en el celu o la compu. Podés cerrar la app y seguir después. Para arrancar un cronograma nuevo desde cero, tocá "🗑️ Empezar de cero" en Configuración.
+
 **Pasos para usarla:**
 
 1. **Configuración general** – Elegí el mes de inicio, cuántos meses querés generar, cuántos residentes son y cuántos hacen guardia por día. Podés ponerle nombre a cada uno.
@@ -205,44 +209,157 @@ const applyRoleSwapByType = (state, r, dt, sign) => {
   if (dt === 'sun')    { state.arrSunC[r] += sign; state.abjSunC[r] -= sign; }
 };
 
+// ─── Guardado local (localStorage) ───────────────────────────────────────────
+// Todo el avance (configuración, preferencias, paso del asistente y último
+// cronograma generado) se guarda en el dispositivo, así se puede cerrar la app
+// y seguir después. Si cambia la forma de lo guardado, subir la versión.
+const STORAGE_KEY     = 'guardias-cuneras:v1';
+const STORAGE_VERSION = 1;
+
+const loadSavedState = () => {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    return data && data.version === STORAGE_VERSION ? data : {};
+  } catch {
+    return {};  // modo incógnito, JSON roto, etc.: arrancamos de cero
+  }
+};
+
+const clearSavedState = () => {
+  try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* nada */ }
+};
+
+// ─── Modo guiado (asistente paso a paso) ─────────────────────────────────────
+// Títulos cortos de cada paso (se muestran arriba, junto a la barra de progreso).
+const WIZARD_STEP_LABELS = {
+  role:        'Arranquemos',
+  period:      'Período',
+  residents:   'Residentes',
+  names:       'Nombres',
+  perDay:      'Resis por día',
+  r4:          '¿Son R4?',
+  rotation:    'Recuperando rotación',
+  pairs:       'Parejas',
+  holidays:    'Feriados',
+  prefsMethod: 'Preferencias',
+  vacation:    'Vacaciones',
+  want:        'Quieren estar',
+  dontWant:    'No quieren estar',
+  remote:      'Preferencias remotas',
+  summary:     'Resumen',
+  resImport:   'Formulario',
+  resWho:      '¿Quién sos?',
+  resExport:   'Mandar preferencias',
+};
+
+// Textos de los pasos de preferencias. "self" = el resi cargando lo suyo.
+const PREF_STEP_INFO = {
+  vacation: {
+    emoji: '🏖️',
+    title: '¿Alguien tiene vacaciones o días en los que no puede sí o sí?',
+    titleSelf: '¿Tenés vacaciones o días en los que no podés sí o sí?',
+    desc: 'Es una regla dura: esos días nunca se le asigna guardia. Si nadie tiene, seguí de largo.',
+    chipOn: 'bg-slate-800 text-white border-slate-800',
+    badge: 'bg-slate-600 text-white',
+  },
+  want: {
+    emoji: '🙋',
+    title: '¿Alguien necesita o quiere estar de guardia algún día en particular?',
+    titleSelf: '¿Necesitás o querés estar de guardia algún día en particular?',
+    desc: 'La app intenta dárselo, pero no es garantía: si choca con la equidad o con otras reglas puede no respetarse.',
+    chipOn: 'bg-orange-500 text-white border-orange-500',
+    badge: 'bg-orange-500 text-white',
+  },
+  dontWant: {
+    emoji: '🙅',
+    title: '¿Alguien prefiere NO estar de guardia algún día?',
+    titleSelf: '¿Preferís NO estar de guardia algún día?',
+    desc: 'Es una preferencia: se intenta respetar y, si no se puede, aparece como aviso en el calendario.',
+    chipOn: 'bg-amber-500 text-white border-amber-500',
+    badge: 'bg-amber-500 text-white',
+  },
+};
+
+const WizardQuestion = ({ emoji, title, desc }) => (
+  <div className="mb-5">
+    <h2 className="!text-xl md:!text-2xl !font-extrabold !text-slate-800 flex items-start gap-3 !mb-0">
+      <span className="shrink-0">{emoji}</span><span>{title}</span>
+    </h2>
+    {desc && <p className="text-sm text-gray-500 mt-2">{desc}</p>}
+  </div>
+);
+
+const ChoiceCard = ({ selected, onClick, emoji, title, desc }) => (
+  <button onClick={onClick}
+    className={`w-full text-left p-4 rounded-xl border-2 transition-all flex items-start gap-3 ${selected ? 'border-orange-500 bg-orange-50 shadow-sm' : 'border-gray-200 bg-white hover:border-orange-300 hover:bg-orange-50/30'}`}>
+    <span className="text-2xl shrink-0 leading-none mt-0.5">{emoji}</span>
+    <div className="flex-1">
+      <p className={`font-bold ${selected ? 'text-orange-800' : 'text-gray-800'}`}>{title}</p>
+      {desc && <p className="text-xs text-gray-500 mt-1">{desc}</p>}
+    </div>
+    <div className={`w-5 h-5 rounded-full border-2 shrink-0 mt-0.5 flex items-center justify-center ${selected ? 'border-orange-500 bg-orange-500' : 'border-gray-300'}`}>
+      {selected && <div className="w-2 h-2 rounded-full bg-white" />}
+    </div>
+  </button>
+);
+
+const SummaryRow = ({ label, value, onEdit }) => (
+  <div className="flex items-center justify-between gap-3 py-2.5">
+    <span className="text-sm font-semibold text-gray-500 whitespace-nowrap shrink-0">{label}</span>
+    <div className="flex items-center gap-3 text-right">
+      <span className="text-sm font-bold text-gray-800">{value}</span>
+      {onEdit && (
+        <button onClick={onEdit} className="text-xs font-bold text-orange-600 hover:underline shrink-0">Cambiar</button>
+      )}
+    </div>
+  </div>
+);
+
 export default function App() {
-  const [baseDate, setBaseDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const [numMonths, setNumMonths] = useState(1);
-  const [numResidents, setNumResidents] = useState(5);
-  const [residentsPerDay, setResidentsPerDay] = useState(1);
-  const [r4Mode, setR4Mode] = useState(false);
+  // Avance guardado (se lee una sola vez, al abrir la app).
+  const [saved] = useState(loadSavedState);
+
+  const [baseDate, setBaseDate] = useState(() => saved.baseDate
+    ? new Date(saved.baseDate.y, saved.baseDate.m, 1)
+    : new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const [numMonths, setNumMonths] = useState(saved.numMonths ?? 1);
+  const [numResidents, setNumResidents] = useState(saved.numResidents ?? 5);
+  const [residentsPerDay, setResidentsPerDay] = useState(saved.residentsPerDay ?? 1);
+  const [r4Mode, setR4Mode] = useState(saved.r4Mode ?? false);
   // Modo R4 — "Recuperando rotación": meses anulados por residente.
   // Clave de mes absoluta 'YYYY-MM' para que sea estable ante cambios de período.
-  const [r4AnnulledMonths, setR4AnnulledMonths] = useState({}); // { [resId]: ['YYYY-MM', ...] }
+  const [r4AnnulledMonths, setR4AnnulledMonths] = useState(saved.r4AnnulledMonths ?? {}); // { [resId]: ['YYYY-MM', ...] }
 
   // Parejas: dos resis de la misma sala que no pueden coincidir de guardia.
   // Mapa simétrico { [resId]: partnerId }. Solo aplica con 2+ resis por día.
-  const [pairsEnabled, setPairsEnabled] = useState(false);
-  const [pairs, setPairs]               = useState({});
+  const [pairsEnabled, setPairsEnabled] = useState(saved.pairsEnabled ?? false);
+  const [pairs, setPairs]               = useState(saved.pairs ?? {});
 
   // Corrimiento (en meses) de la ventana visible en "Recuperando rotación",
   // relativo al mes de inicio. 0 = la ventana coincide con el período a generar.
   const [rotationOffset, setRotationOffset] = useState(0);
 
-  const [holidays, setHolidays] = useState([]);
-  const [preferences, setPreferences] = useState({});
-  const [residentNames, setResidentNames] = useState({});
+  const [holidays, setHolidays] = useState(saved.holidays ?? []);
+  const [preferences, setPreferences] = useState(saved.preferences ?? {});
+  const [residentNames, setResidentNames] = useState(saved.residentNames ?? {});
 
   const getResName      = (id) => residentNames[id]?.trim() || `Residente ${id+1}`;
   const getShortResName = (id) => residentNames[id]?.trim() || `Res. ${id+1}`;
 
   const [configDate, setConfigDate]     = useState(new Date(baseDate));
-  const [configMode, setConfigMode]     = useState('holidays');
-  const [prefSubMode, setPrefSubMode]   = useState('dontWant');
-  const [selectedResId, setSelectedResId] = useState(0);
+  const [configMode, setConfigMode]     = useState(saved.configMode ?? 'holidays');
+  const [prefSubMode, setPrefSubMode]   = useState(saved.prefSubMode ?? 'dontWant');
+  const [selectedResId, setSelectedResId] = useState(saved.selectedResId ?? 0);
 
-  const [schedule, setSchedule]           = useState({});
-  const [stats, setStats]                 = useState([]);
-  const [violations, setViolations]       = useState([]);
+  const [schedule, setSchedule]           = useState(saved.schedule ?? {});
+  const [stats, setStats]                 = useState(saved.stats ?? []);
+  const [violations, setViolations]       = useState(saved.violations ?? []);
   const [activeTab, setActiveTab]         = useState('config');
   const [resultMonthOffset, setResultMonthOffset] = useState(0);
   const [isExporting, setIsExporting]     = useState(false);
-  const [weights, setWeights]             = useState(DEFAULT_WEIGHTS);
+  const [weights, setWeights]             = useState(() => ({ ...DEFAULT_WEIGHTS, ...(saved.weights || {}) }));
 
   const [isGenerating, setIsGenerating]         = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
@@ -255,6 +372,40 @@ export default function App() {
   const [prefImportLog,   setPrefImportLog]   = useState([]);
   const [remoteMode,      setRemoteMode]      = useState('coordinator'); // 'coordinator' | 'resident'
   const [showRemotePanel, setShowRemotePanel] = useState(false);
+
+  // Modo guiado: 'guided' = asistente paso a paso, 'classic' = todo en una pantalla.
+  // Ambos editan el mismo estado, así que se puede saltar de uno a otro sin perder nada.
+  const [configView,     setConfigView]     = useState(saved.configView ?? 'guided');
+  const [wizardStep,     setWizardStep]     = useState(saved.wizardStep ?? 'role');
+  const [wizardRole,     setWizardRole]     = useState(saved.wizardRole ?? null);  // 'coord' | 'resi'
+  const [prefsMethod,    setPrefsMethod]    = useState(saved.prefsMethod ?? null);  // 'manual' | 'remote' | 'none'
+  const [wizardFormInfo, setWizardFormInfo] = useState(saved.wizardFormInfo ?? null);  // formulario base importado (camino resi)
+  const [wizardFromSummary, setWizardFromSummary] = useState(saved.wizardFromSummary ?? false);
+
+  // Guarda el avance cada vez que cambia algo relevante (no el progreso del SA).
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: STORAGE_VERSION,
+        baseDate: { y: baseDate.getFullYear(), m: baseDate.getMonth() },
+        numMonths, numResidents, residentsPerDay, r4Mode, r4AnnulledMonths,
+        pairsEnabled, pairs, holidays, preferences, residentNames, weights,
+        configMode, prefSubMode, selectedResId,
+        schedule, stats, violations,
+        configView, wizardStep, wizardRole, prefsMethod, wizardFormInfo, wizardFromSummary,
+      }));
+    } catch { /* sin espacio o localStorage bloqueado: seguimos sin guardar */ }
+  }, [baseDate, numMonths, numResidents, residentsPerDay, r4Mode, r4AnnulledMonths,
+      pairsEnabled, pairs, holidays, preferences, residentNames, weights,
+      configMode, prefSubMode, selectedResId, schedule, stats, violations,
+      configView, wizardStep, wizardRole, prefsMethod, wizardFormInfo, wizardFromSummary]);
+
+  // Borra todo lo guardado y recarga la app con los valores por defecto.
+  const resetAll = () => {
+    if (!window.confirm('¿Borrar toda la configuración, las preferencias y el cronograma generado? No se puede deshacer.')) return;
+    clearSavedState();
+    window.location.reload();
+  };
 
   useEffect(() => {
     const handler = (e) => { e.preventDefault(); setDeferredPrompt(e); };
@@ -291,6 +442,18 @@ export default function App() {
   };
 
   const printAsPDF = () => window.print();
+
+  // Prende/apaga Modo R4. Al prenderlo fuerza 2 resis por día (Arriba/Abajo).
+  const setR4 = (on) => {
+    setR4Mode(on);
+    if (on) setResidentsPerDay(2);
+    else if (configMode === 'rotacion') setConfigMode('holidays');
+  };
+
+  const changeNumResidents = (v) => {
+    setNumResidents(v);
+    if (selectedResId >= v) setSelectedResId(0);
+  };
 
   const toggleHoliday = (dateStr) =>
     setHolidays(prev => prev.includes(dateStr) ? prev.filter(d => d !== dateStr) : [...prev, dateStr].sort());
@@ -386,7 +549,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const importBaseConfig = (file) => {
+  const importBaseConfig = (file, onLoaded) => {
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
@@ -399,7 +562,8 @@ export default function App() {
         const names = {};
         Object.entries(data.residentNames).forEach(([k,v]) => { names[parseInt(k)] = v; });
         setResidentNames(names);
-        alert(`✓ Configuración cargada: ${data.numResidents} residentes, ${data.numMonths} mes(es).`);
+        if (onLoaded) onLoaded(data);
+        else alert(`✓ Configuración cargada: ${data.numResidents} residentes, ${data.numMonths} mes(es).`);
       } catch { alert('Error al leer el archivo. ¿Está corrupto?'); }
     };
     reader.readAsText(file);
@@ -1328,6 +1492,83 @@ export default function App() {
     );
   };
 
+  // ── Bloques reusados entre la vista clásica y el modo guiado ──────────────
+  const renderNamesEditor = () => (
+    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+      {Array.from({length: numResidents}).map((_, i) => {
+        const borderCls = RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[2];
+        return (
+          <input key={i} type="text" placeholder={`Residente ${i+1}`}
+            value={residentNames[i] || ''}
+            onChange={(e) => setResidentNames(prev => ({...prev, [i]: e.target.value}))}
+            className={`w-full p-2 text-sm font-medium bg-gray-50 border-y border-r border-l-4 rounded outline-none focus:ring-1 focus:ring-orange-500 focus:bg-white placeholder-gray-400 transition-colors ${borderCls}`} />
+        );
+      })}
+    </div>
+  );
+
+  const renderPairsEditor = () => (
+    <div>
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      {Array.from({length: numResidents}).map((_, i) => {
+        const partner   = partnerOfRes(i);
+        const borderCls = RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[2];
+        return (
+          <div key={i} className={`flex items-center gap-2 bg-gray-50 border-y border-r border-l-4 rounded p-2 ${borderCls}`}>
+            <span className="text-sm font-semibold text-gray-800 truncate flex-1" title={getResName(i)}>{getResName(i)}</span>
+            <select
+              value={partner === null ? '' : partner}
+              onChange={(e) => setPartner(i, e.target.value === '' ? null : parseInt(e.target.value))}
+              className="w-[46%] p-1.5 text-xs bg-white border border-gray-300 rounded-md outline-none focus:border-orange-500 font-semibold">
+              <option value="">Sin pareja</option>
+              {Array.from({length: numResidents}).map((_, j) => {
+                if (j === i) return null;
+                const jPartner = partnerOfRes(j);
+                if (jPartner !== null && jPartner !== i) return null;
+                return <option key={j} value={j}>{getResName(j)}</option>;
+              })}
+            </select>
+          </div>
+        );
+      })}
+    </div>
+    <p className="text-xs text-gray-500 mt-3">
+      Puede haber resis sin pareja (si el número es impar, o si simplemente no comparten sala).
+    </p>
+    </div>
+  );
+
+  const renderImportLog = () => (
+    prefImportLog.length > 0 && (
+      <div className="mt-4 space-y-2">
+        <p className="text-xs font-bold text-gray-600 uppercase tracking-wide">Resultado de la importación</p>
+        {prefImportLog.map((entry, i) => (
+          <div key={i} className={`flex items-start gap-3 p-3 rounded-lg border text-sm ${
+            entry.status==='ok'   ? 'bg-green-50 border-green-200' :
+            entry.status==='warn' ? 'bg-amber-50 border-amber-200' :
+                                    'bg-red-50 border-red-200'}`}>
+            <span className="text-lg shrink-0">
+              {entry.status==='ok' ? '✅' : entry.status==='warn' ? '⚠️' : '❌'}
+            </span>
+            <div>
+              <p className="font-bold text-gray-800">{entry.resName || entry.file}</p>
+              {entry.counts && (
+                <p className="text-xs text-gray-600 mt-0.5">
+                  {entry.counts.vac} vacaciones · {entry.counts.want} quiere estar · {entry.counts.dont} no quiere estar
+                </p>
+              )}
+              {entry.msg && <p className="text-xs text-amber-700 mt-0.5">{entry.msg}</p>}
+              {entry.status==='error' && <p className="text-xs text-red-600 mt-0.5">{entry.msg}</p>}
+            </div>
+          </div>
+        ))}
+        <p className="text-xs text-gray-500 pt-1">
+          {prefImportLog.filter(e=>e.status!=='error').length} de {prefImportLog.length} archivos importados correctamente. Las preferencias ya quedaron cargadas.
+        </p>
+      </div>
+    )
+  );
+
   // Como nadie puede hacer dos guardias seguidas, los que están hoy no pueden estar
   // mañana: hace falta al menos el doble de resis por día para que exista solución.
   const minResidentsNeeded = residentsPerDay * 2;
@@ -1380,7 +1621,7 @@ export default function App() {
         <span>
           Movete con las flechitas para marcar cualquier mes. Los que están <strong>fuera del período a generar</strong> quedan
           guardados, pero solo afectan al cronograma cuando caen dentro del período (ajustá el <strong>Mes de Inicio</strong> o
-          el <strong>Período a Generar</strong> arriba en Configuración).
+          el <strong>Período a Generar</strong>).
         </span>
       </div>
 
@@ -1461,6 +1702,489 @@ export default function App() {
           y se le descuentan del total las guardias promedio de cada mes anulado.
           Los marcados en <strong className="text-amber-500">punteado</strong> están fuera del período y hoy no hacen nada.
         </p>
+      </div>
+    </div>
+  );
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  MODO GUIADO (asistente paso a paso)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Usa exactamente el mismo estado que la vista clásica: cada paso solo pregunta
+  // una cosa y llama a los mismos setters. La lista de pasos se arma según lo que
+  // se va respondiendo (ej: "¿Son R4?" solo aparece si hay 2 resis por día).
+
+  const wizardSteps = (() => {
+    if (wizardRole === 'resi')
+      return ['role', 'resImport', 'resWho', 'vacation', 'want', 'dontWant', 'resExport'];
+    const s = ['role', 'period', 'residents', 'names', 'perDay'];
+    if (residentsPerDay === 2) s.push('r4');
+    if (r4Mode)                s.push('rotation');
+    if (residentsPerDay >= 2)  s.push('pairs');
+    s.push('holidays', 'prefsMethod');
+    if (prefsMethod === 'manual') s.push('vacation', 'want', 'dontWant');
+    if (prefsMethod === 'remote') s.push('remote');
+    s.push('summary');
+    return s;
+  })();
+  const wizardIdx     = Math.max(0, wizardSteps.indexOf(wizardStep));
+  const currentStep   = wizardSteps[wizardIdx];
+  const isLastWizStep = currentStep === 'summary' || currentStep === 'resExport';
+
+  const goToStep = (id, fromSummary = false) => {
+    setWizardStep(id);
+    setWizardFromSummary(fromSummary);
+    if (id === 'holidays') setConfigMode('holidays');
+    if (id === 'vacation' || id === 'want' || id === 'dontWant') {
+      setConfigMode('preferences');
+      setPrefSubMode(id);
+    }
+    if (id === 'rotation') setRotationOffset(0);
+    setConfigDate(new Date(baseDate.getFullYear(), baseDate.getMonth(), 1));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const wizardCanNext = (() => {
+    if (currentStep === 'role')        return wizardRole !== null;
+    if (currentStep === 'perDay')      return !notEnoughResidents;
+    if (currentStep === 'prefsMethod') return prefsMethod !== null;
+    if (currentStep === 'resImport')   return wizardFormInfo !== null;
+    return true;
+  })();
+
+  // Calendario del asistente: siempre dentro del período a generar.
+  const wizMonthIdx = Math.min(Math.max(
+    (configDate.getFullYear() - baseDate.getFullYear()) * 12 + configDate.getMonth() - baseDate.getMonth(), 0), numMonths - 1);
+  const wizCalDate  = new Date(baseDate.getFullYear(), baseDate.getMonth() + wizMonthIdx, 1);
+  const setWizMonth = (i) => setConfigDate(new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1));
+
+  const fmtDay = (ds) => new Date(ds + 'T00:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+
+  // Días marcados (dentro del período) de un tipo de preferencia para un resi.
+  const prefDays  = (resId, cat) => ((preferences[resId] || {})[cat] || []).filter(isDateInRange);
+  const holidaysInPeriod = holidays.filter(isDateInRange);
+  const pairsCount = Array.from({ length: numResidents }, (_, i) => i)
+    .filter(i => { const p = partnerOfRes(i); return p !== null && p > i; }).length;
+  const annulledTotal = Array.from({ length: numResidents }, (_, i) => annulledInPeriod(i)).reduce((a, b) => a + b, 0);
+
+  const renderWizardCalendar = () => (
+    <div>
+      <div className="flex items-center justify-between gap-2 bg-slate-100 p-1.5 rounded-lg border border-slate-200">
+        <button onClick={() => setWizMonth(wizMonthIdx - 1)} disabled={wizMonthIdx === 0}
+          className="p-1.5 hover:bg-slate-200 rounded disabled:opacity-30 disabled:cursor-not-allowed"><ChevronLeft className="w-5 h-5"/></button>
+        <span className="text-center font-semibold text-sm">
+          {capitalize(wizCalDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' }))}
+          {numMonths > 1 && <span className="text-xs text-gray-500 font-medium"> · mes {wizMonthIdx + 1} de {numMonths}</span>}
+        </span>
+        <button onClick={() => setWizMonth(wizMonthIdx + 1)} disabled={wizMonthIdx === numMonths - 1}
+          className="p-1.5 hover:bg-slate-200 rounded disabled:opacity-30 disabled:cursor-not-allowed"><ChevronRight className="w-5 h-5"/></button>
+      </div>
+      {renderCalendarMonth(wizCalDate, true)}
+    </div>
+  );
+
+  const renderDayChips = (days, onRemove, cls) => (
+    days.length === 0 ? null : (
+      <div className="flex flex-wrap gap-1.5 mt-3">
+        {days.map(ds => (
+          <button key={ds} onClick={() => onRemove(ds)} title="Tocá para sacarlo"
+            className={`text-xs font-bold px-2 py-1 rounded-md ${cls} hover:opacity-80 transition-opacity`}>
+            {fmtDay(ds)} ✕
+          </button>
+        ))}
+      </div>
+    )
+  );
+
+  // Paso de preferencias (vacaciones / quiere / no quiere).
+  const renderPrefStep = (cat) => {
+    const info   = PREF_STEP_INFO[cat];
+    const isSelf = wizardRole === 'resi';
+    const days   = prefDays(selectedResId, cat);
+    const next   = selectedResId + 1;
+    return (
+      <>
+        <WizardQuestion emoji={info.emoji} title={isSelf ? info.titleSelf : info.title} desc={info.desc} />
+        {!isSelf && (
+          <div className="mb-4">
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">1. Elegí el resi</p>
+            <div className="flex flex-wrap gap-2">
+              {Array.from({ length: numResidents }).map((_, i) => {
+                const n   = prefDays(i, cat).length;
+                const sel = selectedResId === i;
+                return (
+                  <button key={i} onClick={() => setSelectedResId(i)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all ${sel ? info.chipOn + ' shadow-sm' : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'}`}>
+                    <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[0]}`} />
+                    {getResName(i)}
+                    {n > 0 && <span className={`rounded-full px-1.5 text-[10px] font-extrabold ${sel ? 'bg-white/90 text-gray-800' : info.badge}`}>{n}</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mt-4">2. Tocá los días de {getResName(selectedResId)}</p>
+          </div>
+        )}
+        {renderWizardCalendar()}
+        {renderDayChips(days, (ds) => togglePreference(selectedResId, ds), info.badge)}
+        {!isSelf && (
+          <div className="flex justify-end mt-4">
+            {next < numResidents ? (
+              <button onClick={() => setSelectedResId(next)}
+                className="text-sm font-bold text-orange-700 bg-orange-50 border border-orange-200 hover:bg-orange-100 px-3 py-2 rounded-lg transition-colors">
+                Listo {getShortResName(selectedResId)}, sigue {getShortResName(next)} →
+              </button>
+            ) : (
+              <span className="text-xs text-gray-500">Ese es el último resi. Cuando termines, tocá <strong>Siguiente</strong>.</span>
+            )}
+          </div>
+        )}
+      </>
+    );
+  };
+
+  const renderWizardStep = () => {
+    switch (currentStep) {
+
+      case 'role': return (
+        <>
+          <WizardQuestion emoji="👋" title="¡Hola! ¿Qué venís a hacer?"
+            desc="Te voy a ir preguntando de a una cosa. Si en algún momento preferís ver todo junto, usá el botón de arriba." />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <ChoiceCard selected={wizardRole === 'coord'} onClick={() => setWizardRole('coord')} emoji="🧑‍⚕️"
+              title="Voy a armar las guardias"
+              desc="Configurás el equipo, cargás vacaciones y preferencias, y generás el cronograma." />
+            <ChoiceCard selected={wizardRole === 'resi'} onClick={() => setWizardRole('resi')} emoji="📱"
+              title="Voy a cargar mis preferencias"
+              desc="Te mandaron un formulario: marcás tus días y le devolvés el archivo a quien coordina." />
+          </div>
+        </>
+      );
+
+      case 'period': return (
+        <>
+          <WizardQuestion emoji="📅" title="¿Desde qué mes y por cuánto tiempo?"
+            desc="Normalmente se arman de a 4 meses, pero podés generar entre 1 y 12." />
+          <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Mes de inicio</p>
+          <div className="flex items-center gap-2 bg-gray-50 p-2 rounded-lg border border-gray-200 max-w-sm">
+            <button onClick={() => setBaseDate(new Date(baseDate.getFullYear(), baseDate.getMonth()-1, 1))} className="p-1 hover:text-orange-600"><ChevronLeft className="w-5 h-5"/></button>
+            <span className="flex-1 text-center font-bold text-gray-800">{capitalize(baseDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' }))}</span>
+            <button onClick={() => setBaseDate(new Date(baseDate.getFullYear(), baseDate.getMonth()+1, 1))} className="p-1 hover:text-orange-600"><ChevronRight className="w-5 h-5"/></button>
+          </div>
+          <p className="text-xs font-bold text-gray-500 uppercase tracking-wide mt-5 mb-2">Cantidad de meses</p>
+          <div className="grid grid-cols-6 md:grid-cols-12 gap-2">
+            {[1,2,3,4,5,6,7,8,9,10,11,12].map(n => (
+              <button key={n} onClick={() => setNumMonths(n)}
+                className={`py-2.5 rounded-lg border-2 font-extrabold text-sm transition-all ${numMonths === n ? 'border-orange-500 bg-orange-500 text-white shadow-sm' : 'border-gray-200 bg-white text-gray-700 hover:border-orange-300'}`}>
+                {n}
+              </button>
+            ))}
+          </div>
+          <p className="text-sm text-gray-600 mt-4">
+            Se va a generar <strong>{periodMonths.map(m => m.label).join(', ')}</strong>.
+          </p>
+        </>
+      );
+
+      case 'residents': return (
+        <>
+          <WizardQuestion emoji="👩‍⚕️" title="¿Cuántos residentes hacen guardia?"
+            desc="Contá a todos los que entran en el cronograma, aunque alguno tenga vacaciones en el medio." />
+          <div className="flex items-center justify-center gap-6 py-4">
+            <button onClick={() => changeNumResidents(Math.max(2, numResidents - 1))} disabled={numResidents <= 2}
+              className="w-14 h-14 rounded-full border-2 border-gray-300 text-3xl font-bold text-gray-600 hover:border-orange-400 hover:text-orange-600 disabled:opacity-30 transition-colors">−</button>
+            <div className="text-center min-w-[100px]">
+              <p className="text-6xl font-extrabold text-orange-600 leading-none">{numResidents}</p>
+              <p className="text-sm font-semibold text-gray-500 mt-2">residentes</p>
+            </div>
+            <button onClick={() => changeNumResidents(Math.min(37, numResidents + 1))} disabled={numResidents >= 37}
+              className="w-14 h-14 rounded-full border-2 border-gray-300 text-3xl font-bold text-gray-600 hover:border-orange-400 hover:text-orange-600 disabled:opacity-30 transition-colors">+</button>
+          </div>
+        </>
+      );
+
+      case 'names': return (
+        <>
+          <WizardQuestion emoji="✍️" title="¿Cómo se llaman?"
+            desc="Es opcional, pero ayuda un montón a leer el calendario. Si lo dejás vacío queda 'Residente 1', 'Residente 2', etc." />
+          {renderNamesEditor()}
+        </>
+      );
+
+      case 'perDay': return (
+        <>
+          <WizardQuestion emoji="🌙" title="¿Cuántos resis hay de guardia por día?" />
+          <div className="grid grid-cols-5 gap-2 md:gap-3 max-w-lg">
+            {[1,2,3,4,5].map(n => (
+              <button key={n}
+                onClick={() => { setResidentsPerDay(n); if (r4Mode && n !== 2) setR4(false); }}
+                className={`py-4 rounded-xl border-2 font-extrabold text-2xl transition-all ${residentsPerDay === n ? 'border-orange-500 bg-orange-500 text-white shadow-sm' : 'border-gray-200 bg-white text-gray-700 hover:border-orange-300'}`}>
+                {n}
+              </button>
+            ))}
+          </div>
+          {residentsPerDay > 1 && (
+            <p className={`text-sm mt-4 ${notEnoughResidents ? 'text-rose-600 font-bold' : 'text-gray-500'}`}>
+              {notEnoughResidents
+                ? `⚠️ Con ${residentsPerDay} por día hacen falta al menos ${minResidentsNeeded} resis (nadie hace dos días seguidos) y pusiste ${numResidents}. Volvé atrás y sumá resis, o bajá este número.`
+                : `Ok: con ${residentsPerDay} por día hacen falta al menos ${minResidentsNeeded} resis, y tenés ${numResidents}.`}
+            </p>
+          )}
+        </>
+      );
+
+      case 'r4': return (
+        <>
+          <WizardQuestion emoji="🩺" title="Son 2 por día… ¿son R4?"
+            desc="En Modo R4 cada día tiene dos roles distintos y la app reparte parejo los dos roles para cada resi." />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <ChoiceCard selected={r4Mode} onClick={() => setR4(true)} emoji="↕️"
+              title="Sí, somos R4"
+              desc='Uno queda "Arriba" (sala) y el otro "Abajo" (externa).' />
+            <ChoiceCard selected={!r4Mode} onClick={() => setR4(false)} emoji="👯"
+              title="No, son dos guardias iguales"
+              desc="Los dos hacen lo mismo, sin roles." />
+          </div>
+        </>
+      );
+
+      case 'rotation': return (
+        <>
+          <WizardQuestion emoji="♻️" title="¿Algún R4 arranca tarde las guardias (recuperando rotación)?"
+            desc="Marcá los meses en que no va a hacer guardia. Se le descuentan del total las guardias promedio de cada mes, así nadie le 'cobra' después. Si nadie está en esa, seguí de largo." />
+          {renderRotationMatrix()}
+        </>
+      );
+
+      case 'pairs': return (
+        <>
+          <WizardQuestion emoji="🤝" title="¿Hay resis que comparten sala?"
+            desc="Si dos comparten sala no pueden estar de guardia el mismo día: al otro día quedarían los dos posguardia y la sala sin cobertura. Solo pueden coincidir viernes o sábado." />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <ChoiceCard selected={pairsEnabled} onClick={() => setPairsEnabled(true)} emoji="✅"
+              title="Sí, quiero armar parejas" desc="Elegís quién va con quién. Puede haber resis sueltos." />
+            <ChoiceCard selected={!pairsEnabled} onClick={() => setPairsEnabled(false)} emoji="➖"
+              title="No, no hace falta" />
+          </div>
+          {pairsEnabled && <div className="mt-5 animate-in fade-in slide-in-from-top-1 duration-200">{renderPairsEditor()}</div>}
+        </>
+      );
+
+      case 'holidays': return (
+        <>
+          <WizardQuestion emoji="🇦🇷" title="¿Hay feriados en el período?"
+            desc="Tocá los días feriados en el calendario. Pesan distinto: por ejemplo, un viernes feriado cuenta como sábado y el jueves anterior como viernes." />
+          {renderWizardCalendar()}
+          {renderDayChips(holidaysInPeriod, toggleHoliday, 'bg-rose-100 text-rose-700')}
+          {holidaysInPeriod.length === 0 && <p className="text-xs text-gray-400 italic mt-3">Sin feriados marcados. Si no hay, seguí de largo.</p>}
+        </>
+      );
+
+      case 'prefsMethod': return (
+        <>
+          <WizardQuestion emoji="🗓️" title="Ahora las vacaciones y preferencias. ¿Cómo las cargamos?"
+            desc="Vacaciones (días que no pueden sí o sí), días que quieren estar y días que prefieren no estar." />
+          <div className="grid grid-cols-1 gap-3">
+            <ChoiceCard selected={prefsMethod === 'manual'} onClick={() => setPrefsMethod('manual')} emoji="✋"
+              title="Las cargo yo acá, resi por resi"
+              desc="Te voy a preguntar de a una cosa: primero vacaciones, después los días que quieren estar y por último los que no." />
+            <ChoiceCard selected={prefsMethod === 'remote'} onClick={() => setPrefsMethod('remote')} emoji="📲"
+              title="Que cada uno las cargue en su celu"
+              desc="Mandás un formulario al grupo, cada resi marca sus días y te devuelve un archivo que importás acá." />
+            <ChoiceCard selected={prefsMethod === 'none'} onClick={() => setPrefsMethod('none')} emoji="🤷"
+              title="Nadie pidió nada, sigamos"
+              desc="Se reparte todo solo por equidad." />
+          </div>
+        </>
+      );
+
+      case 'vacation':
+      case 'want':
+      case 'dontWant':
+        return renderPrefStep(currentStep);
+
+      case 'remote': return (
+        <>
+          <WizardQuestion emoji="📲" title="Preferencias desde el celu de cada uno"
+            desc="Son dos pasos: mandás el formulario y después cargás lo que te devuelven." />
+          <div className="space-y-4">
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
+              <p className="text-sm font-bold text-indigo-800 mb-1">① Mandá el formulario al grupo</p>
+              <p className="text-xs text-indigo-600 mb-3">Tiene el período y los nombres. Cada uno lo abre en la app (opción "Voy a cargar mis preferencias"), marca sus días y te manda su archivo.</p>
+              <button onClick={exportBaseConfig}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-bold transition-colors shadow-sm">
+                <Download className="w-4 h-4" /> Descargar formulario base
+              </button>
+            </div>
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+              <p className="text-sm font-bold text-emerald-800 mb-1">② Cargá los archivos que te mandaron</p>
+              <p className="text-xs text-emerald-600 mb-3">Podés elegir varios <code className="bg-emerald-100 px-1 rounded">preferencias_*.json</code> a la vez.</p>
+              <label className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-bold transition-colors shadow-sm cursor-pointer w-fit">
+                <Users className="w-4 h-4" /> Cargar archivos de preferencias
+                <input type="file" accept=".json" multiple className="hidden"
+                  onChange={(e) => importPreferenceFiles(Array.from(e.target.files))} />
+              </label>
+              {renderImportLog()}
+            </div>
+            <p className="text-xs text-gray-500">
+              💾 El avance queda guardado en este dispositivo: podés cerrar la app y volver a este paso cuando te manden los archivos.
+            </p>
+          </div>
+        </>
+      );
+
+      case 'summary': return (
+        <>
+          <WizardQuestion emoji="✅" title="¡Listo! Revisá que esté todo bien"
+            desc="Si algo no va, tocá 'Cambiar' y te llevo a ese paso." />
+          <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 divide-y divide-gray-200">
+            <SummaryRow label="Período" onEdit={() => goToStep('period', true)}
+              value={`${periodMonths[0].label}${numMonths > 1 ? ` – ${periodMonths[numMonths-1].label}` : ''} (${numMonths} ${numMonths === 1 ? 'mes' : 'meses'})`} />
+            <SummaryRow label="Residentes" value={numResidents} onEdit={() => goToStep('residents', true)} />
+            <SummaryRow label="Por día" value={residentsPerDay} onEdit={() => goToStep('perDay', true)} />
+            {residentsPerDay === 2 && <SummaryRow label="Modo R4" value={r4Mode ? 'Sí (Arriba / Abajo)' : 'No'} onEdit={() => goToStep('r4', true)} />}
+            {r4Mode && <SummaryRow label="Recuperando rotación" value={annulledTotal === 0 ? 'Nadie' : `${annulledTotal} mes${annulledTotal !== 1 ? 'es' : ''} anulado${annulledTotal !== 1 ? 's' : ''}`} onEdit={() => goToStep('rotation', true)} />}
+            {residentsPerDay >= 2 && <SummaryRow label="Parejas" value={!pairsEnabled ? 'No' : pairsCount === 0 ? 'Activadas, sin armar' : `${pairsCount} pareja${pairsCount !== 1 ? 's' : ''}`} onEdit={() => goToStep('pairs', true)} />}
+            <SummaryRow label="Feriados" value={holidaysInPeriod.length === 0 ? 'Ninguno' : holidaysInPeriod.length} onEdit={() => goToStep('holidays', true)} />
+          </div>
+
+          <div className="mt-4 bg-white border border-gray-200 rounded-xl overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wide">
+                  <th className="p-2.5 text-left">Resi</th>
+                  <th className="p-2 text-center" title="Vacaciones">🏖️ Vac</th>
+                  <th className="p-2 text-center" title="Quiere estar">🙋 Sí</th>
+                  <th className="p-2 text-center" title="Prefiere no estar">🙅 No</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {Array.from({ length: numResidents }).map((_, i) => (
+                  <tr key={i}>
+                    <td className="p-2.5 font-semibold text-gray-800">
+                      <div className="flex items-center gap-2 whitespace-nowrap">
+                        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[0]}`} />
+                        {getShortResName(i)}
+                      </div>
+                    </td>
+                    {['vacation', 'want', 'dontWant'].map(cat => {
+                      const n = prefDays(i, cat).length;
+                      return <td key={cat} className={`p-2 text-center font-bold ${n ? 'text-gray-800' : 'text-gray-300'}`}>{n || '–'}</td>;
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="px-3 py-2 border-t border-gray-100 bg-gray-50/50 flex flex-wrap gap-3 text-xs">
+              <button onClick={() => goToStep('prefsMethod', true)} className="font-bold text-orange-600 hover:underline">Cambiar preferencias</button>
+            </div>
+          </div>
+
+          <p className="text-xs text-gray-500 mt-4">
+            Los criterios de equidad vienen bien calibrados. Si querés darle más peso a algo, está la pestaña <button onClick={() => setActiveTab('weights')} className="font-bold text-orange-600 hover:underline">Prioridades</button>.
+          </p>
+
+          <button onClick={generateScheduleAsync}
+            disabled={isGenerating || notEnoughResidents}
+            className="w-full py-4 bg-slate-900 hover:bg-slate-800 disabled:bg-gray-400 text-white rounded-xl font-extrabold text-lg transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-3 mt-5">
+            {notEnoughResidents
+              ? `Faltan resis: con ${residentsPerDay} por día hacen falta al menos ${minResidentsNeeded}`
+              : <><CalendarDays className="w-6 h-6"/> GENERAR GUARDIAS ÓPTIMAS</>}
+          </button>
+        </>
+      );
+
+      case 'resImport': return (
+        <>
+          <WizardQuestion emoji="📥" title="Cargá el formulario que te mandó quien coordina"
+            desc="Es un archivo formulario-guardias-….json. Trae el período y los nombres del equipo, así tus fechas coinciden con las de todos." />
+          <label className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-3 rounded-lg text-sm font-bold transition-colors shadow-sm cursor-pointer w-fit">
+            <Download className="w-4 h-4" /> Elegir formulario
+            <input type="file" accept=".json" className="hidden"
+              onChange={(e) => e.target.files[0] && importBaseConfig(e.target.files[0], (data) => { setWizardFormInfo(data); setSelectedResId(0); })} />
+          </label>
+          {wizardFormInfo ? (
+            <div className="mt-4 bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800">
+              ✅ Formulario cargado: <strong>{wizardFormInfo.numResidents} residentes</strong>, {wizardFormInfo.numMonths} {wizardFormInfo.numMonths === 1 ? 'mes' : 'meses'} desde{' '}
+              <strong>{capitalize(new Date(wizardFormInfo.startYear, wizardFormInfo.startMonth, 1).toLocaleString('es-ES', { month: 'long', year: 'numeric' }))}</strong>.
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500 mt-4">¿No lo tenés? Pedíselo a quien coordina las guardias.</p>
+          )}
+        </>
+      );
+
+      case 'resWho': return (
+        <>
+          <WizardQuestion emoji="🙋‍♀️" title="¿Quién sos?" />
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+            {Array.from({ length: numResidents }).map((_, i) => (
+              <button key={i} onClick={() => setSelectedResId(i)}
+                className={`flex items-center gap-2 p-3 rounded-xl border-2 text-sm font-bold text-left transition-all ${selectedResId === i ? 'border-orange-500 bg-orange-50 text-orange-800' : 'border-gray-200 bg-white text-gray-700 hover:border-orange-300'}`}>
+                <span className={`w-3 h-3 rounded-full shrink-0 ${RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[0]}`} />
+                <span className="truncate">{getResName(i)}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      );
+
+      case 'resExport': {
+        const counts = ['vacation', 'want', 'dontWant'].map(cat => prefDays(selectedResId, cat).length);
+        return (
+          <>
+            <WizardQuestion emoji="📤" title={`Listo, ${getResName(selectedResId)}. Mandale tu archivo a quien coordina`}
+              desc="Descargalo y mandalo por WhatsApp (o por donde se estén organizando)." />
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-sm text-gray-700 mb-4">
+              Marcaste <strong>{counts[0]}</strong> de vacaciones, <strong>{counts[1]}</strong> que querés estar y <strong>{counts[2]}</strong> que preferís no estar.
+            </div>
+            <button onClick={() => exportResidentPrefs(selectedResId)}
+              className="w-full md:w-auto flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-500 text-white px-5 py-3 rounded-xl text-base font-extrabold transition-colors shadow-md">
+              <Download className="w-5 h-5" /> Descargar mis preferencias
+            </button>
+          </>
+        );
+      }
+
+      default: return null;
+    }
+  };
+
+  const renderWizard = () => (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden text-left">
+      <div className="px-5 pt-5">
+        <div className="flex justify-between items-center text-xs font-bold text-gray-400 mb-2">
+          <span>Paso {wizardIdx + 1} de {wizardSteps.length}</span>
+          <span className="text-orange-600 uppercase tracking-wide">{WIZARD_STEP_LABELS[currentStep]}</span>
+        </div>
+        <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden">
+          <div className="bg-orange-500 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${((wizardIdx + 1) / wizardSteps.length) * 100}%` }} />
+        </div>
+      </div>
+
+      <div key={currentStep} className="p-5 md:p-6 min-h-[300px] animate-in fade-in slide-in-from-right-2 duration-300">
+        {renderWizardStep()}
+      </div>
+
+      <div className="flex items-center justify-between gap-3 p-4 border-t border-gray-200 bg-gray-50/60">
+        <button onClick={() => wizardIdx > 0 && goToStep(wizardSteps[wizardIdx - 1])} disabled={wizardIdx === 0}
+          className="flex items-center gap-1 px-4 py-2.5 rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-200 disabled:opacity-0 transition-colors">
+          <ChevronLeft className="w-4 h-4" /> Atrás
+        </button>
+        <div className="flex items-center gap-2">
+          {wizardFromSummary && !isLastWizStep && wizardSteps.includes('summary') && (
+            <button onClick={() => goToStep('summary')}
+              className="px-4 py-2.5 rounded-lg text-sm font-bold text-orange-700 border border-orange-300 bg-white hover:bg-orange-50 transition-colors">
+              Volver al resumen
+            </button>
+          )}
+          {!isLastWizStep && (
+            <button onClick={() => goToStep(wizardSteps[wizardIdx + 1], wizardFromSummary)} disabled={!wizardCanNext}
+              className="flex items-center gap-1 px-5 py-2.5 rounded-lg text-sm font-extrabold bg-orange-600 hover:bg-orange-500 text-white shadow-sm disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors">
+              Siguiente <ChevronRight className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1573,6 +2297,25 @@ export default function App() {
           {/* ── CONFIG TAB ── */}
           {activeTab === 'config' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+              {/* Selector de vista: asistente paso a paso o todo junto */}
+              <div className="flex flex-col md:flex-row items-center justify-center gap-2 md:gap-4">
+              <div className="flex bg-gray-100 p-1 rounded-xl w-full md:w-fit">
+                <button onClick={() => setConfigView('guided')}
+                  className={`flex-1 md:flex-none px-5 py-2 text-sm font-bold rounded-lg transition-all ${configView === 'guided' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                  🧭 Paso a paso
+                </button>
+                <button onClick={() => setConfigView('classic')}
+                  className={`flex-1 md:flex-none px-5 py-2 text-sm font-bold rounded-lg transition-all ${configView === 'classic' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                  ⚙️ Todo junto
+                </button>
+              </div>
+              <button onClick={resetAll} title="Borra todo lo guardado en este dispositivo"
+                className="text-xs font-bold text-gray-400 hover:text-rose-600 transition-colors">
+                🗑️ Empezar de cero
+              </button>
+              </div>
+
+              {configView === 'guided' ? renderWizard() : (<>
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                   <label className="block text-sm font-bold text-gray-700 mb-2">Mes de Inicio</label>
@@ -1592,7 +2335,7 @@ export default function App() {
                 <div className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
                   <label className="block text-sm font-bold text-gray-700 mb-2">Número total de resis</label>
                   <select value={numResidents}
-                    onChange={(e) => { const v = parseInt(e.target.value); setNumResidents(v); if (selectedResId >= v) setSelectedResId(0); }}
+                    onChange={(e) => changeNumResidents(parseInt(e.target.value))}
                     className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-lg font-medium text-gray-800 outline-none focus:border-orange-500">
                     {Array.from({ length: 36 }, (_, i) => i + 2).map(n => (
                       <option key={n} value={n}>{n} Residentes</option>
@@ -1618,17 +2361,7 @@ export default function App() {
                 <label className="block text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
                   <Users className="w-5 h-5 text-orange-600"/> Nombres del equipazo
                 </label>
-                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                  {Array.from({length: numResidents}).map((_, i) => {
-                    const borderCls = RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[2];
-                    return (
-                      <input key={i} type="text" placeholder={`Residente ${i+1}`}
-                        value={residentNames[i] || ''}
-                        onChange={(e) => setResidentNames(prev => ({...prev, [i]: e.target.value}))}
-                        className={`w-full p-2 text-sm font-medium bg-gray-50 border-y border-r border-l-4 rounded outline-none focus:ring-1 focus:ring-orange-500 focus:bg-white placeholder-gray-400 transition-colors ${borderCls}`} />
-                    );
-                  })}
-                </div>
+                {renderNamesEditor()}
               </div>
 
               {/* ── FORMAR PAREJAS ── */}
@@ -1662,32 +2395,7 @@ export default function App() {
 
                 {residentsPerDay >= 2 && pairsEnabled && (
                   <div className="mt-4 animate-in fade-in slide-in-from-top-1 duration-200">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {Array.from({length: numResidents}).map((_, i) => {
-                        const partner   = partnerOfRes(i);
-                        const borderCls = RESIDENT_COLORS[i % RESIDENT_COLORS.length].split(' ')[2];
-                        return (
-                          <div key={i} className={`flex items-center gap-2 bg-gray-50 border-y border-r border-l-4 rounded p-2 ${borderCls}`}>
-                            <span className="text-sm font-semibold text-gray-800 truncate flex-1" title={getResName(i)}>{getResName(i)}</span>
-                            <select
-                              value={partner === null ? '' : partner}
-                              onChange={(e) => setPartner(i, e.target.value === '' ? null : parseInt(e.target.value))}
-                              className="w-[46%] p-1.5 text-xs bg-white border border-gray-300 rounded-md outline-none focus:border-orange-500 font-semibold">
-                              <option value="">Sin pareja</option>
-                              {Array.from({length: numResidents}).map((_, j) => {
-                                if (j === i) return null;
-                                const jPartner = partnerOfRes(j);
-                                if (jPartner !== null && jPartner !== i) return null;
-                                return <option key={j} value={j}>{getResName(j)}</option>;
-                              })}
-                            </select>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <p className="text-xs text-gray-500 mt-3">
-                      Puede haber resis sin pareja (si el número es impar, o si simplemente no comparten sala).
-                    </p>
+                    {renderPairsEditor()}
                   </div>
                 )}
               </div>
@@ -1747,34 +2455,7 @@ export default function App() {
                               onChange={(e) => importPreferenceFiles(Array.from(e.target.files))} />
                           </label>
 
-                          {prefImportLog.length > 0 && (
-                            <div className="mt-4 space-y-2">
-                              <p className="text-xs font-bold text-gray-600 uppercase tracking-wide">Resultado de la importación</p>
-                              {prefImportLog.map((entry, i) => (
-                                <div key={i} className={`flex items-start gap-3 p-3 rounded-lg border text-sm ${
-                                  entry.status==='ok'   ? 'bg-green-50 border-green-200' :
-                                  entry.status==='warn' ? 'bg-amber-50 border-amber-200' :
-                                                          'bg-red-50 border-red-200'}`}>
-                                  <span className="text-lg shrink-0">
-                                    {entry.status==='ok' ? '✅' : entry.status==='warn' ? '⚠️' : '❌'}
-                                  </span>
-                                  <div>
-                                    <p className="font-bold text-gray-800">{entry.resName || entry.file}</p>
-                                    {entry.counts && (
-                                      <p className="text-xs text-gray-600 mt-0.5">
-                                        {entry.counts.vac} vacaciones · {entry.counts.want} quiere estar · {entry.counts.dont} no quiere estar
-                                      </p>
-                                    )}
-                                    {entry.msg && <p className="text-xs text-amber-700 mt-0.5">{entry.msg}</p>}
-                                    {entry.status==='error' && <p className="text-xs text-red-600 mt-0.5">{entry.msg}</p>}
-                                  </div>
-                                </div>
-                              ))}
-                              <p className="text-xs text-gray-500 pt-1">
-                                {prefImportLog.filter(e=>e.status!=='error').length} de {prefImportLog.length} archivos importados correctamente. Las preferencias ya están cargadas en el editor de abajo.
-                              </p>
-                            </div>
-                          )}
+                          {renderImportLog()}
                         </div>
                       </div>
                     )}
@@ -1827,7 +2508,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-3">
                     <button
-                      onClick={() => { const next = !r4Mode; setR4Mode(next); if (next) setResidentsPerDay(2); else if (configMode === 'rotacion') setConfigMode('holidays'); }}
+                      onClick={() => setR4(!r4Mode)}
                       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all ${r4Mode ? 'bg-sky-50 border-sky-400 text-sky-700' : 'bg-white border-gray-300 text-gray-600 hover:border-gray-400'}`}>
                       <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all ${r4Mode ? 'bg-sky-500 border-sky-500' : 'border-gray-400'}`}>
                         {r4Mode && <svg viewBox="0 0 12 12" className="w-2.5 h-2.5"><polyline points="2,6 5,9 10,4" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
@@ -1899,6 +2580,7 @@ export default function App() {
                   ? `Error: con ${residentsPerDay} resi${residentsPerDay > 1 ? 's' : ''} por día hacen falta al menos ${minResidentsNeeded} residentes`
                   : <><CalendarDays className="w-6 h-6"/> GENERAR GUARDIAS ÓPTIMAS</>}
               </button>
+              </>)}
             </div>
           )}
 

@@ -35,7 +35,7 @@ npm run lint     # eslint
 
 Casi todo vive en **un solo archivo**:
 
-- `src/App.jsx` (~1700 líneas) — **toda** la app: estado, algoritmo, UI. Es el archivo
+- `src/App.jsx` (~2700 líneas) — **toda** la app: estado, algoritmo, UI. Es el archivo
   central; cualquier cambio de lógica o interfaz pasa por acá.
 - `src/main.jsx` — bootstrap de React, monta `<App />`.
 - `src/index.css` — entrada de Tailwind.
@@ -44,6 +44,14 @@ Casi todo vive en **un solo archivo**:
 - `dist/`, `android/`, `node_modules/` — generados/empaquetado; no editar a mano.
 
 No hay tests, ni routing, ni manejo de estado externo. Estado = `useState` dentro de `App`.
+
+**Persistencia**: todo el avance se guarda en `localStorage` (clave `STORAGE_KEY` =
+`guardias-cuneras:v1`): configuración, preferencias, pesos, paso del asistente y el último
+cronograma generado. Se lee una vez al montar (`loadSavedState`, cada `useState` toma
+`saved.x ?? default`) y se escribe en un `useEffect`. `baseDate` se guarda como `{ y, m }`.
+Si se agrega estado que deba sobrevivir a un cierre, sumarlo al objeto guardado **y** a las
+dependencias del effect; si cambia la forma de algo guardado, subir `STORAGE_VERSION`
+(lo viejo se descarta). El botón "🗑️ Empezar de cero" (`resetAll`) borra y recarga.
 
 ## Mapa de `App.jsx`
 
@@ -69,6 +77,26 @@ Componente `App` (resto del archivo):
   para la UI, y detecta violaciones (días seguidos, sanguchitos/triples, jueves feliz, etc.).
 - **Render**: 4 pestañas — `config`, `calendar`, `stats`, `weights`. `renderCalendarMonth`
   dibuja un mes (modo editor o modo resultado).
+
+## Modo guiado (asistente paso a paso)
+
+La pestaña Configuración tiene un selector `configView`: **"🧭 Paso a paso"** (`'guided'`,
+default) o **"⚙️ Todo junto"** (`'classic'`, la pantalla de siempre). El asistente **no tiene
+estado propio de configuración**: cada paso llama a los mismos setters que la vista clásica
+(`setNumResidents`, `setR4`, `togglePreference`, etc.), así que se puede saltar de una vista
+a la otra sin perder nada.
+
+- `wizardSteps` se arma dinámicamente según las respuestas: `r4` solo si rpd === 2,
+  `rotation` solo con Modo R4, `pairs` solo con rpd >= 2, y `vacation`/`want`/`dontWant` o
+  `remote` según `prefsMethod` (`'manual' | 'remote' | 'none'`).
+- Dos caminos según `wizardRole`: `'coord'` (arma el cronograma y termina en `summary` con el
+  botón Generar) y `'resi'` (importa el formulario base, elige quién es, marca sus días y
+  exporta su JSON en `resExport`).
+- `goToStep(id, fromSummary)` sincroniza `configMode`/`prefSubMode` para que
+  `renderCalendarMonth(…, true)` pinte y togglee lo correcto. Desde el resumen, "Cambiar"
+  lleva al paso con `wizardFromSummary` y aparece "Volver al resumen".
+- Bloques compartidos con la vista clásica: `renderNamesEditor`, `renderPairsEditor`,
+  `renderImportLog`, `renderRotationMatrix`.
 
 ## El algoritmo (`generateScheduleAsync`)
 

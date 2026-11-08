@@ -45,6 +45,14 @@ Casi todo vive en **un solo archivo**:
 
 No hay tests, ni routing, ni manejo de estado externo. Estado = `useState` dentro de `App`.
 
+**Persistencia**: todo el avance se guarda en `localStorage` (clave `STORAGE_KEY` =
+`guardias-cuneras:v1`): configuración, preferencias, pesos, paso del asistente y el último
+cronograma generado. Se lee una vez al montar (`loadSavedState`, cada `useState` toma
+`saved.x ?? default`) y se escribe en un `useEffect`. `baseDate` se guarda como `{ y, m }`.
+Si se agrega estado que deba sobrevivir a un cierre, sumarlo al objeto guardado **y** a las
+dependencias del effect; si cambia la forma de algo guardado, subir `STORAGE_VERSION`
+(lo viejo se descarta). El botón "🗑️ Empezar de cero" (`resetAll`) borra y recarga.
+
 ## Mapa de `App.jsx`
 
 Constantes de dominio (arriba del archivo):

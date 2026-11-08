@@ -96,6 +96,8 @@ Genera el cronograma de guardias de forma automática, intentando que la carga s
 
 **Modo guiado** – En la pestaña Configuración, "🧭 Paso a paso" te va preguntando de a una cosa (período, cuántos resis, cuántos por día, si son R4, parejas, feriados, vacaciones y preferencias) y al final generás. "⚙️ Todo junto" muestra todo en una sola pantalla. Los dos usan los mismos datos: podés pasar de uno a otro sin perder nada.
 
+**Se guarda solo** – Todo lo que cargás (y el último cronograma generado) queda guardado en el celu o la compu. Podés cerrar la app y seguir después. Para arrancar un cronograma nuevo desde cero, tocá "🗑️ Empezar de cero" en Configuración.
+
 **Pasos para usarla:**
 
 1. **Configuración general** – Elegí el mes de inicio, cuántos meses querés generar, cuántos residentes son y cuántos hacen guardia por día. Podés ponerle nombre a cada uno.
@@ -207,6 +209,28 @@ const applyRoleSwapByType = (state, r, dt, sign) => {
   if (dt === 'sun')    { state.arrSunC[r] += sign; state.abjSunC[r] -= sign; }
 };
 
+// ─── Guardado local (localStorage) ───────────────────────────────────────────
+// Todo el avance (configuración, preferencias, paso del asistente y último
+// cronograma generado) se guarda en el dispositivo, así se puede cerrar la app
+// y seguir después. Si cambia la forma de lo guardado, subir la versión.
+const STORAGE_KEY     = 'guardias-cuneras:v1';
+const STORAGE_VERSION = 1;
+
+const loadSavedState = () => {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    return data && data.version === STORAGE_VERSION ? data : {};
+  } catch {
+    return {};  // modo incógnito, JSON roto, etc.: arrancamos de cero
+  }
+};
+
+const clearSavedState = () => {
+  try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* nada */ }
+};
+
 // ─── Modo guiado (asistente paso a paso) ─────────────────────────────────────
 // Títulos cortos de cada paso (se muestran arriba, junto a la barra de progreso).
 const WIZARD_STEP_LABELS = {
@@ -294,43 +318,48 @@ const SummaryRow = ({ label, value, onEdit }) => (
 );
 
 export default function App() {
-  const [baseDate, setBaseDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const [numMonths, setNumMonths] = useState(1);
-  const [numResidents, setNumResidents] = useState(5);
-  const [residentsPerDay, setResidentsPerDay] = useState(1);
-  const [r4Mode, setR4Mode] = useState(false);
+  // Avance guardado (se lee una sola vez, al abrir la app).
+  const [saved] = useState(loadSavedState);
+
+  const [baseDate, setBaseDate] = useState(() => saved.baseDate
+    ? new Date(saved.baseDate.y, saved.baseDate.m, 1)
+    : new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const [numMonths, setNumMonths] = useState(saved.numMonths ?? 1);
+  const [numResidents, setNumResidents] = useState(saved.numResidents ?? 5);
+  const [residentsPerDay, setResidentsPerDay] = useState(saved.residentsPerDay ?? 1);
+  const [r4Mode, setR4Mode] = useState(saved.r4Mode ?? false);
   // Modo R4 — "Recuperando rotación": meses anulados por residente.
   // Clave de mes absoluta 'YYYY-MM' para que sea estable ante cambios de período.
-  const [r4AnnulledMonths, setR4AnnulledMonths] = useState({}); // { [resId]: ['YYYY-MM', ...] }
+  const [r4AnnulledMonths, setR4AnnulledMonths] = useState(saved.r4AnnulledMonths ?? {}); // { [resId]: ['YYYY-MM', ...] }
 
   // Parejas: dos resis de la misma sala que no pueden coincidir de guardia.
   // Mapa simétrico { [resId]: partnerId }. Solo aplica con 2+ resis por día.
-  const [pairsEnabled, setPairsEnabled] = useState(false);
-  const [pairs, setPairs]               = useState({});
+  const [pairsEnabled, setPairsEnabled] = useState(saved.pairsEnabled ?? false);
+  const [pairs, setPairs]               = useState(saved.pairs ?? {});
 
   // Corrimiento (en meses) de la ventana visible en "Recuperando rotación",
   // relativo al mes de inicio. 0 = la ventana coincide con el período a generar.
   const [rotationOffset, setRotationOffset] = useState(0);
 
-  const [holidays, setHolidays] = useState([]);
-  const [preferences, setPreferences] = useState({});
-  const [residentNames, setResidentNames] = useState({});
+  const [holidays, setHolidays] = useState(saved.holidays ?? []);
+  const [preferences, setPreferences] = useState(saved.preferences ?? {});
+  const [residentNames, setResidentNames] = useState(saved.residentNames ?? {});
 
   const getResName      = (id) => residentNames[id]?.trim() || `Residente ${id+1}`;
   const getShortResName = (id) => residentNames[id]?.trim() || `Res. ${id+1}`;
 
   const [configDate, setConfigDate]     = useState(new Date(baseDate));
-  const [configMode, setConfigMode]     = useState('holidays');
-  const [prefSubMode, setPrefSubMode]   = useState('dontWant');
-  const [selectedResId, setSelectedResId] = useState(0);
+  const [configMode, setConfigMode]     = useState(saved.configMode ?? 'holidays');
+  const [prefSubMode, setPrefSubMode]   = useState(saved.prefSubMode ?? 'dontWant');
+  const [selectedResId, setSelectedResId] = useState(saved.selectedResId ?? 0);
 
-  const [schedule, setSchedule]           = useState({});
-  const [stats, setStats]                 = useState([]);
-  const [violations, setViolations]       = useState([]);
+  const [schedule, setSchedule]           = useState(saved.schedule ?? {});
+  const [stats, setStats]                 = useState(saved.stats ?? []);
+  const [violations, setViolations]       = useState(saved.violations ?? []);
   const [activeTab, setActiveTab]         = useState('config');
   const [resultMonthOffset, setResultMonthOffset] = useState(0);
   const [isExporting, setIsExporting]     = useState(false);
-  const [weights, setWeights]             = useState(DEFAULT_WEIGHTS);
+  const [weights, setWeights]             = useState(() => ({ ...DEFAULT_WEIGHTS, ...(saved.weights || {}) }));
 
   const [isGenerating, setIsGenerating]         = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
@@ -346,12 +375,37 @@ export default function App() {
 
   // Modo guiado: 'guided' = asistente paso a paso, 'classic' = todo en una pantalla.
   // Ambos editan el mismo estado, así que se puede saltar de uno a otro sin perder nada.
-  const [configView,     setConfigView]     = useState('guided');
-  const [wizardStep,     setWizardStep]     = useState('role');
-  const [wizardRole,     setWizardRole]     = useState(null);  // 'coord' | 'resi'
-  const [prefsMethod,    setPrefsMethod]    = useState(null);  // 'manual' | 'remote' | 'none'
-  const [wizardFormInfo, setWizardFormInfo] = useState(null);  // formulario base importado (camino resi)
-  const [wizardFromSummary, setWizardFromSummary] = useState(false);
+  const [configView,     setConfigView]     = useState(saved.configView ?? 'guided');
+  const [wizardStep,     setWizardStep]     = useState(saved.wizardStep ?? 'role');
+  const [wizardRole,     setWizardRole]     = useState(saved.wizardRole ?? null);  // 'coord' | 'resi'
+  const [prefsMethod,    setPrefsMethod]    = useState(saved.prefsMethod ?? null);  // 'manual' | 'remote' | 'none'
+  const [wizardFormInfo, setWizardFormInfo] = useState(saved.wizardFormInfo ?? null);  // formulario base importado (camino resi)
+  const [wizardFromSummary, setWizardFromSummary] = useState(saved.wizardFromSummary ?? false);
+
+  // Guarda el avance cada vez que cambia algo relevante (no el progreso del SA).
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        version: STORAGE_VERSION,
+        baseDate: { y: baseDate.getFullYear(), m: baseDate.getMonth() },
+        numMonths, numResidents, residentsPerDay, r4Mode, r4AnnulledMonths,
+        pairsEnabled, pairs, holidays, preferences, residentNames, weights,
+        configMode, prefSubMode, selectedResId,
+        schedule, stats, violations,
+        configView, wizardStep, wizardRole, prefsMethod, wizardFormInfo, wizardFromSummary,
+      }));
+    } catch { /* sin espacio o localStorage bloqueado: seguimos sin guardar */ }
+  }, [baseDate, numMonths, numResidents, residentsPerDay, r4Mode, r4AnnulledMonths,
+      pairsEnabled, pairs, holidays, preferences, residentNames, weights,
+      configMode, prefSubMode, selectedResId, schedule, stats, violations,
+      configView, wizardStep, wizardRole, prefsMethod, wizardFormInfo, wizardFromSummary]);
+
+  // Borra todo lo guardado y recarga la app con los valores por defecto.
+  const resetAll = () => {
+    if (!window.confirm('¿Borrar toda la configuración, las preferencias y el cronograma generado? No se puede deshacer.')) return;
+    clearSavedState();
+    window.location.reload();
+  };
 
   useEffect(() => {
     const handler = (e) => { e.preventDefault(); setDeferredPrompt(e); };
@@ -1972,7 +2026,7 @@ export default function App() {
               {renderImportLog()}
             </div>
             <p className="text-xs text-gray-500">
-              ⚠️ Ojo: la app no guarda nada si la cerrás. Dejala abierta mientras esperás los archivos.
+              💾 El avance queda guardado en este dispositivo: podés cerrar la app y volver a este paso cuando te manden los archivos.
             </p>
           </div>
         </>
@@ -2244,7 +2298,8 @@ export default function App() {
           {activeTab === 'config' && (
             <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
               {/* Selector de vista: asistente paso a paso o todo junto */}
-              <div className="flex bg-gray-100 p-1 rounded-xl w-full md:w-fit mx-auto">
+              <div className="flex flex-col md:flex-row items-center justify-center gap-2 md:gap-4">
+              <div className="flex bg-gray-100 p-1 rounded-xl w-full md:w-fit">
                 <button onClick={() => setConfigView('guided')}
                   className={`flex-1 md:flex-none px-5 py-2 text-sm font-bold rounded-lg transition-all ${configView === 'guided' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
                   🧭 Paso a paso
@@ -2253,6 +2308,11 @@ export default function App() {
                   className={`flex-1 md:flex-none px-5 py-2 text-sm font-bold rounded-lg transition-all ${configView === 'classic' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
                   ⚙️ Todo junto
                 </button>
+              </div>
+              <button onClick={resetAll} title="Borra todo lo guardado en este dispositivo"
+                className="text-xs font-bold text-gray-400 hover:text-rose-600 transition-colors">
+                🗑️ Empezar de cero
+              </button>
               </div>
 
               {configView === 'guided' ? renderWizard() : (<>
